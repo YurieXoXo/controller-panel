@@ -47,6 +47,7 @@ CONTROLLER_TOKEN = os.getenv("CONTROLLER_TOKEN", "")
 COMMAND_CHANNEL_ID = int(os.getenv("COMMAND_CHANNEL_ID", "0"))
 TARGET_CHANNEL_ID  = int(os.getenv("TARGET_CHANNEL_ID", "0"))
 BOT_TAG = "[BOT1]"
+TAG_BROADCAST_CHANNEL_ID = 1450113302104641618  # channel to post discovered tags
 
 assert CONTROLLER_TOKEN, "Set CONTROLLER_TOKEN env var"
 assert COMMAND_CHANNEL_ID and TARGET_CHANNEL_ID, "Set COMMAND/TARGET channel IDs"
@@ -60,8 +61,8 @@ ROOT_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path("./data")
 DATA_DIR.mkdir(exist_ok=True)
 
-TAG_PATTERN = re.compile(r"^\\s*(\\[[^\\]\\r\\n]{2,32}\\])")
-TAG_ANYWHERE = re.compile(r"(\\[[^\\[\\]\\r\\n]{2,32}\\])")
+TAG_PATTERN = re.compile(r"^\s*(\[[^\]\r\n]{2,32}\])")
+TAG_ANYWHERE = re.compile(r"(\[[^\[\]\r\n]{2,32}\])")
 
 def _register_tag(tag: str) -> str:
     """
@@ -71,6 +72,7 @@ def _register_tag(tag: str) -> str:
     if not tag_clean:
         return ACTIVE_BOT_TAG
     KNOWN_TAGS.add(tag_clean)
+    print(f"[TAG] registered: {tag_clean}")
     return tag_clean
 
 
@@ -91,10 +93,14 @@ def _extract_tag(content: str):
         return None
     match = TAG_PATTERN.match(content)
     if match:
-        return _register_tag(match.group(1))
+        tag = match.group(1)
+        print(f"[TAG] leading match: {tag} from {content}")
+        return _register_tag(tag)
     match_any = TAG_ANYWHERE.search(content)
     if match_any:
-        return _register_tag(match_any.group(1))
+        tag = match_any.group(1)
+        print(f"[TAG] anywhere match: {tag} from {content}")
+        return _register_tag(tag)
     return None
 
 
@@ -198,10 +204,20 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
     if message.author.bot and message.channel.id == TARGET_CHANNEL_ID:
         tag = _extract_tag(message.content or "")
+        print(f"[MSG] from {message.author} content={message.content!r} tag_detected={tag}")
+        new_tag = False
         if tag:
+            if tag not in KNOWN_TAGS:
+                new_tag = True
             _register_tag(tag)
             if ACTIVE_BOT_TAG == BOT_TAG:
                 _set_active_tag(tag)
+        if new_tag:
+            try:
+                tag_ch = await _get_channel(TAG_BROADCAST_CHANNEL_ID)
+                await tag_ch.send(f"Discovered receiver tag: {tag}")
+            except Exception as exc:
+                print(f"[TAG] failed to broadcast {tag}: {exc}")
         payload = {
             "type": "text",
             "author": str(message.author),
