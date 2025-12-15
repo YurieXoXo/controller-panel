@@ -194,6 +194,8 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
     if message.author.bot and message.channel.id == TARGET_CHANNEL_ID:
         tag = _extract_tag(message.content or "")
+        if tag and tag != ACTIVE_BOT_TAG:
+            _set_active_tag(tag)
         payload = {
             "type": "text",
             "author": str(message.author),
@@ -404,7 +406,7 @@ PANEL_HTML = r"""<!doctype html>
     async function refreshTags(){ try{ const r = await fetch('/tags'); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; } catch(e){} renderTags(); }
     async function chooseTag(){ const val=(el.tagInput?.value||'').trim(); if(!val){ toast('Enter a tag'); return; } currentTag = val; try{ const r = await fetch('/tags/select?tag='+encodeURIComponent(val), {method:'POST'}); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; toast('Now targeting '+currentTag); } catch(e){ toast('Could not set tag'); } renderTags(); }
     function withTag(path){ const u=new URL(path, window.location.origin); if(currentTag) u.searchParams.set('tag', currentTag); return u.pathname + u.search; }
-    function touchTagFromMessage(obj){ if(obj && obj.tag){ knownTags.add(obj.tag); if(!currentTag) currentTag = obj.tag; renderTags(); } }
+    function touchTagFromMessage(obj){ if(obj && obj.tag){ knownTags.add(obj.tag); const isDefault=currentTag==="{BOT_TAG}" || !currentTag || !knownTags.has(currentTag); if(isDefault) currentTag = obj.tag; renderTags(); } }
 
     function node(author, content, ts){ const d=document.createElement('div'); d.className='item'; const m=document.createElement('div'); m.className='meta'; const time=ts? new Date(ts).toLocaleString(): new Date().toLocaleString(); m.textContent = `${time} - ${author}`; const b=document.createElement('div'); b.textContent = content || ''; d.appendChild(m); d.appendChild(b); return d; }
     function addFeed(container, div, limit=200){ container.prepend(div); while(container.children.length>limit) container.lastChild.remove(); }
