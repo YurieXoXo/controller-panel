@@ -263,6 +263,9 @@ PANEL_HTML = r"""<!doctype html>
     .tag-control{display:grid; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:var(--card); min-width:240px;}
     .tag-row{display:flex; gap:6px; align-items:center; flex-wrap:wrap;} .tag-row input{flex:1; min-width:160px;}
     .tag-meta{font-size:12px; color:var(--muted);}
+    .tag-box{border:1px solid var(--line); background:var(--card); padding:8px 10px; border-radius:10px; min-width:200px;}
+    .tag-list{display:flex; flex-wrap:wrap; gap:6px; max-width:320px;}
+    .tag-chip{border:1px solid var(--line); padding:5px 8px; border-radius:8px; background:#0c1220; cursor:pointer; font-weight:700;} .tag-chip:hover{border-color:var(--accent); color:var(--accent);}
     .shell{margin-top:16px; border:1px solid var(--line); border-radius:16px; background:var(--panel); box-shadow:0 20px 50px rgba(0,0,0,.35); overflow:hidden;}
     .tabbar{display:flex; gap:8px; padding:12px; border-bottom:1px solid var(--line); background:rgba(17,25,42,.75);}
     .tab-btn{flex:1; border:1px solid var(--line); background:var(--card); color:var(--text); padding:10px 12px; border-radius:10px; cursor:pointer; font-weight:700; letter-spacing:0.2px; transition:all .18s ease;} 
@@ -300,6 +303,10 @@ PANEL_HTML = r"""<!doctype html>
             <button class="btn small" onclick="refreshTags()" title="Refresh known tags">&#8635;</button>
           </div>
           <div class="tag-meta">Active: <span id="tagActive">{BOT_TAG}</span></div>
+        </div>
+        <div class="tag-box">
+          <div class="tag-meta">Seen tags (click to copy)</div>
+          <div id="tagList" class="tag-list"></div>
         </div>
         <div class="pill" id="uptime">00:00</div>
       </div>
@@ -400,7 +407,7 @@ PANEL_HTML = r"""<!doctype html>
   <div id="toast"></div>
 
   <script>
-    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput')};
+    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'), tagList:document.getElementById('tagList')};
     let currentTag = "{BOT_TAG}";
     let knownTags = new Set([currentTag]);
     let startedAt = Date.now(); setInterval(()=>{ const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60; el.uptime.textContent=`${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; },1000);
@@ -408,7 +415,26 @@ PANEL_HTML = r"""<!doctype html>
     function setStatus(ok){ el.dot.className='dot '+(ok?'ok':'bad'); el.stxt.textContent = ok ? 'Connected' : 'Reconnecting...'; }
     function toast(t){ const n=document.getElementById('toast'); n.textContent=t; n.style.opacity='1'; setTimeout(()=> n.style.opacity='0', 1500); }
 
-    function renderTags(){ if(el.tagActive) el.tagActive.textContent = currentTag || '(none)'; const dl=document.getElementById('tagOptions'); if(dl){ dl.innerHTML=''; Array.from(knownTags).sort().forEach(t=>{ const o=document.createElement('option'); o.value=t; dl.appendChild(o); }); } if(el.tagInput && !el.tagInput.value) el.tagInput.value=currentTag; }
+    function copyTag(tag){ if(!tag) return; if(navigator.clipboard){ navigator.clipboard.writeText(tag).catch(()=>{}); toast('Copied '+tag); } else { prompt('Copy tag', tag); } }
+    function renderTags(){
+      if(el.tagActive) el.tagActive.textContent = currentTag || '(none)';
+      const dl=document.getElementById('tagOptions');
+      if(dl){
+        dl.innerHTML='';
+        Array.from(knownTags).sort().forEach(t=>{ const o=document.createElement('option'); o.value=t; dl.appendChild(o); });
+      }
+      if(el.tagInput && !el.tagInput.value) el.tagInput.value=currentTag;
+      if(el.tagList){
+        el.tagList.innerHTML='';
+        Array.from(knownTags).sort().forEach(t=>{
+          const chip=document.createElement('div');
+          chip.className='tag-chip';
+          chip.textContent=t;
+          chip.onclick=()=>{ copyTag(t); if(el.tagInput) el.tagInput.value=t; };
+          el.tagList.appendChild(chip);
+        });
+      }
+    }
     async function refreshTags(){ try{ const r = await fetch('/tags'); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; } catch(e){} renderTags(); }
     async function chooseTag(){ const val=(el.tagInput?.value||'').trim(); if(!val){ toast('Enter a tag'); return; } currentTag = val; try{ const r = await fetch('/tags/select?tag='+encodeURIComponent(val), {method:'POST'}); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; toast('Now targeting '+currentTag); } catch(e){ toast('Could not set tag'); } renderTags(); }
     function withTag(path){ const u=new URL(path, window.location.origin); if(currentTag) u.searchParams.set('tag', currentTag); return u.pathname + u.search; }
