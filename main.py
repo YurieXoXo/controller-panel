@@ -61,6 +61,7 @@ DATA_DIR = Path("./data")
 DATA_DIR.mkdir(exist_ok=True)
 
 TAG_PATTERN = re.compile(r"^\\s*(\\[[^\\]\\r\\n]{2,32}\\])")
+TAG_ANYWHERE = re.compile(r"(\\[[^\\[\\]\\r\\n]{2,32}\\])")
 
 def _register_tag(tag: str) -> str:
     """
@@ -91,6 +92,9 @@ def _extract_tag(content: str):
     match = TAG_PATTERN.match(content)
     if match:
         return _register_tag(match.group(1))
+    match_any = TAG_ANYWHERE.search(content)
+    if match_any:
+        return _register_tag(match_any.group(1))
     return None
 
 
@@ -194,8 +198,10 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
     if message.author.bot and message.channel.id == TARGET_CHANNEL_ID:
         tag = _extract_tag(message.content or "")
-        if tag and tag != ACTIVE_BOT_TAG:
-            _set_active_tag(tag)
+        if tag:
+            _register_tag(tag)
+            if ACTIVE_BOT_TAG == BOT_TAG:
+                _set_active_tag(tag)
         payload = {
             "type": "text",
             "author": str(message.author),
@@ -406,8 +412,8 @@ PANEL_HTML = r"""<!doctype html>
     async function refreshTags(){ try{ const r = await fetch('/tags'); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; } catch(e){} renderTags(); }
     async function chooseTag(){ const val=(el.tagInput?.value||'').trim(); if(!val){ toast('Enter a tag'); return; } currentTag = val; try{ const r = await fetch('/tags/select?tag='+encodeURIComponent(val), {method:'POST'}); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; toast('Now targeting '+currentTag); } catch(e){ toast('Could not set tag'); } renderTags(); }
     function withTag(path){ const u=new URL(path, window.location.origin); if(currentTag) u.searchParams.set('tag', currentTag); return u.pathname + u.search; }
-    const tagRegex = /^\\s*(\\[[^\\]\\r\\n]{2,32}\\])/;
-    function parseTag(text){ const m=(text||'').match(tagRegex); return m?m[1]:null; }
+    const tagRegex = /(^|\\s)(\\[[^\\[\\]\\r\\n]{2,32}\\])/;
+    function parseTag(text){ const m=(text||'').match(tagRegex); return m?m[2]:null; }
     function touchTagFromMessage(obj){
       const found = (obj&&obj.tag) || parseTag(obj&&obj.content);
       if(found){
