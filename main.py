@@ -364,6 +364,13 @@ PANEL_HTML = r"""<!doctype html>
                   <button class="btn primary" onclick="displayGif()">Display gif</button>
                 </div>
                 <div>
+                  <label for="volPercent">Set volume (0-100)</label>
+                  <div class="row">
+                    <input id="volPercent" placeholder="100" value="100" style="max-width:120px"/>
+                    <button class="btn" onclick="setVolume()">Set</button>
+                  </div>
+                </div>
+                <div>
                   <label for="openUrl">Open link</label>
                   <div class="row">
                     <input id="openUrl" placeholder="https://example.com"/>
@@ -494,6 +501,7 @@ PANEL_HTML = r"""<!doctype html>
     async function openLink(){ const url=document.getElementById('openUrl').value.trim(); if(!url){toast('Enter a URL'); return;} const safe=(url.startsWith('http://')||url.startsWith('https://'))?url:'http://'+url; try{ await post('/cmd/open?url='+encodeURIComponent(safe)); toast('Open link sent'); } catch(e){ toast(e.message);} }
     async function killProc(){ const name=document.getElementById('procName').value.trim(); if(!name){toast('Enter a process name'); return;} try{ await post('/cmd/close?name='+encodeURIComponent(name)); toast('Kill command sent'); } catch(e){ toast(e.message);} }
     async function confirmPower(){ if(!confirm('Power off the target machine?')) return; try{ await post('/cmd/poweroff'); toast('Power off sent'); } catch(e){ toast(e.message);} }
+    async function setVolume(){ const val=document.getElementById('volPercent').value.trim() || '100'; const num=parseFloat(val); if(Number.isNaN(num)){ toast('Enter a number'); return; } const pct=Math.min(100, Math.max(0, num)); try{ await post('/cmd/set_volume?pct='+encodeURIComponent(pct)); toast('Volume set to '+pct+'%'); } catch(e){ toast(e.message);} }
     async function displayGif(){ try{ await post('/cmd/display_gif'); toast('Display gif sent'); } catch(e){ toast(e.message);} }
     function clearLogs(){ el.logFeed.innerHTML=''; }
 
@@ -583,6 +591,15 @@ async def cmd_close(name: str = Query(..., min_length=1), tag: str = Query(None)
 async def cmd_poweroff(tag: str = Query(None)):
     await _send_cmd(f"{_resolve_tag(tag)} POWER_OFF")
     return JSONResponse({"ok": True})
+
+@app.post("/cmd/set_volume")
+async def cmd_set_volume(pct: float = Query(100.0), tag: str = Query(None)):
+    try:
+        pct_val = max(0.0, min(100.0, float(pct)))
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid percent"}, status_code=400)
+    await _send_cmd(f"{_resolve_tag(tag)} SET_VOLUME {pct_val}")
+    return JSONResponse({"ok": True, "pct": pct_val})
 
 @app.post("/cmd/live_start")
 async def cmd_live_start(monitor: int = Query(1, ge=1), tag: str = Query(None)):
