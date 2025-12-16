@@ -38,7 +38,7 @@ ensure_dependencies()
 
 import discord
 from discord.ext import commands
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -171,6 +171,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="?", intents=intents)
 _controller_ready = asyncio.Event()
+_controller_error: Optional[str] = None
 
 async def _get_channel(channel_id: int):
     ch = bot.get_channel(channel_id)
