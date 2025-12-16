@@ -329,8 +329,8 @@ PANEL_HTML = r"""<!doctype html>
     .stack{display:grid; gap:10px;} .row{display:flex; gap:8px; flex-wrap:wrap;} input{flex:1; min-width:180px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0a0f1a; color:#e7edf8;} label{font-weight:700;}
     .feed{display:flex; flex-direction:column; gap:10px; max-height:420px; overflow:auto; padding-right:4px;} .feed.small{max-height:360px;} .item{border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:rgba(14,19,30,.9);} .meta{font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-word;}
     .gallery{display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:10px;} .shot{border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#0b0f19; cursor:pointer;} .shot img{width:100%; display:block;}
-    .live-frame{border:1px solid var(--line); border-radius:12px; background:radial-gradient(60% 60% at 30% 30%, rgba(95,224,197,.1), transparent), radial-gradient(50% 60% at 70% 40%, rgba(77,130,255,.12), transparent), #0c1220; min-height:220px; display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden;}
-    .live-frame img{max-width:100%; width:100%; height:auto; object-fit:contain; display:none;}
+    .live-frame{border:1px solid var(--line); border-radius:12px; background:radial-gradient(60% 60% at 30% 30%, rgba(95,224,197,.1), transparent), radial-gradient(50% 60% at 70% 40%, rgba(77,130,255,.12), transparent), #0c1220; min-height:220px; height:60vh; max-height:720px; display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden;}
+    .live-frame img{max-width:100%; width:100%; height:100%; object-fit:contain; display:none;}
     .live-frame.active img{display:block;}
     .live-frame .muted{position:absolute; inset:auto; margin:auto;}
     .live-controls{gap:6px; flex-wrap:wrap;} .input-compact{max-width:90px;}
@@ -339,7 +339,7 @@ PANEL_HTML = r"""<!doctype html>
       .tab-btn{flex:1 0 auto;}
       .card{padding:12px;}
       .head{flex-direction:column; align-items:flex-start;}
-      .live-frame{min-height:200px;}
+      .live-frame{min-height:200px; height:45vh;}
     }
     #toast{position:fixed; left:50%; bottom:18px; transform:translateX(-50%); padding:9px 14px; border-radius:12px; border:1px solid var(--line); background:var(--panel); font-weight:700; opacity:0; transition:opacity .18s ease; z-index:120;}
   </style>
