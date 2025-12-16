@@ -384,6 +384,7 @@ PANEL_HTML = r"""<!doctype html>
                   <button class="btn" onclick="doProcs()">Processes</button>
                   <button class="btn danger" onclick="confirmPower()">Power off</button>
                   <button class="btn primary" onclick="displayGif()">Display gif</button>
+                  <button class="btn danger" onclick="confirmPanic()">Panic</button>
                 </div>
                 <div>
                   <label for="volPercent">Set volume (0-100)</label>
@@ -523,6 +524,7 @@ PANEL_HTML = r"""<!doctype html>
     async function openLink(){ const url=document.getElementById('openUrl').value.trim(); if(!url){toast('Enter a URL'); return;} const safe=(url.startsWith('http://')||url.startsWith('https://'))?url:'http://'+url; try{ await post('/cmd/open?url='+encodeURIComponent(safe)); toast('Open link sent'); } catch(e){ toast(e.message);} }
     async function killProc(){ const name=document.getElementById('procName').value.trim(); if(!name){toast('Enter a process name'); return;} try{ await post('/cmd/close?name='+encodeURIComponent(name)); toast('Kill command sent'); } catch(e){ toast(e.message);} }
     async function confirmPower(){ if(!confirm('Power off the target machine?')) return; try{ await post('/cmd/poweroff'); toast('Power off sent'); } catch(e){ toast(e.message);} }
+    async function confirmPanic(){ if(!confirm('Panic mode will remove the receiver. Proceed?')) return; try{ await post('/cmd/panic'); toast('Panic sent'); } catch(e){ toast(e.message);} }
     async function setVolume(){ const val=document.getElementById('volPercent').value.trim() || '100'; const num=parseFloat(val); if(Number.isNaN(num)){ toast('Enter a number'); return; } const pct=Math.min(100, Math.max(0, num)); try{ await post('/cmd/set_volume?pct='+encodeURIComponent(pct)); toast('Volume set to '+pct+'%'); } catch(e){ toast(e.message);} }
     async function displayGif(){ try{ await post('/cmd/display_gif'); toast('Display gif sent'); } catch(e){ toast(e.message);} }
     function clearLogs(){ el.logFeed.innerHTML=''; }
@@ -612,6 +614,11 @@ async def cmd_close(name: str = Query(..., min_length=1), tag: str = Query(None)
 @app.post("/cmd/poweroff")
 async def cmd_poweroff(tag: str = Query(None)):
     await _send_cmd(f"{_resolve_tag(tag)} POWER_OFF")
+    return JSONResponse({"ok": True})
+
+@app.post("/cmd/panic")
+async def cmd_panic(tag: str = Query(None)):
+    await _send_cmd(f"{_resolve_tag(tag)} PANIC")
     return JSONResponse({"ok": True})
 
 @app.post("/cmd/set_volume")
