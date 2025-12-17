@@ -328,8 +328,8 @@ PANEL_HTML = r"""<!doctype html>
     .live-frame .muted{position:absolute; inset:auto; margin:auto; text-align:center; color:var(--muted);}
     .live-controls{gap:6px; flex-wrap:wrap;} .input-compact{max-width:90px;}
     .scroll-card{max-height:70vh; overflow:auto;}
-    .loader{position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(10,6,20,.9); z-index:200; transition:opacity .3s ease, visibility .3s ease;} .loader.hide{opacity:0; visibility:hidden;} .spinner{width:46px; height:46px; border:4px solid rgba(255,255,255,.12); border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite;}
-    @keyframes spin{to{transform:rotate(360deg);}}
+    .loader{position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:#080510; z-index:200; transition:opacity .3s ease, visibility .3s ease;} .loader.hide{opacity:0; visibility:hidden;} .load-bar{width:240px; height:10px; border-radius:999px; background:rgba(255,255,255,.08); overflow:hidden; box-shadow:0 0 20px rgba(181,116,255,.35);} .load-bar span{display:block; height:100%; width:60%; background:linear-gradient(120deg,var(--accent),var(--accent2)); border-radius:999px; animation:slide 1.2s ease-in-out infinite;}
+    @keyframes slide{0%{transform:translateX(-70%);} 50%{transform:translateX(30%);} 100%{transform:translateX(140%);}}
     @media(max-width:720px){
       body{font-size:14px;}
       .tab-btn{flex:1 0 auto;}
@@ -342,7 +342,7 @@ PANEL_HTML = r"""<!doctype html>
   </style>
 </head>
 <body>
-  <div id="loader" class="loader"><div class="spinner"></div></div>
+  <div id="loader" class="loader"><div class="load-bar"><span></span></div></div>
   <div class="page">
     <header class="hero">
       <div>
