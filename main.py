@@ -361,48 +361,12 @@ PANEL_HTML = r"""<!doctype html>
 
     <div class="shell">
       <div class="tabbar">
-        <button class="tab-btn active" data-tab="live">Live</button>
-        <button class="tab-btn" data-tab="shots">Screenshots</button>
+        <button class="tab-btn active" data-tab="shots">Screenshots</button>
         <button class="tab-btn" data-tab="procs">Processes</button>
         <button class="tab-btn" data-tab="logs">Logs</button>
       </div>
       <div class="views">
-        <section id="tab-live" class="view active">
-          <div class="grid">
-            <div class="card">
-              <div class="head">
-                <div><div class="eyebrow">Live stream</div><h3>Screen share</h3></div>
-                <div id="liveControls" class="row live-controls">
-                  <input id="liveMonitor" class="input-compact" placeholder="1" value="1" title="Monitor index"/>
-                  <button class="btn primary" onclick="startLiveStream()">Start</button>
-                  <button class="btn" onclick="stopLiveStream()">Stop</button>
-                </div>
-              </div>
-              <div id="liveGate" class="pill" style="background:var(--glass); color:var(--muted);">
-                Select a bot first to start a live stream.
-              </div>
-              <div id="liveBody" class="live-wrap">
-                <div class="row" style="gap:8px; align-items:center;">
-                  <div class="pill" style="display:flex; gap:8px; align-items:center;">
-                    <span id="liveDot" class="dot"></span><span id="liveStatus">Idle</span>
-                  </div>
-                </div>
-                <div class="live-frame" id="liveFrameWrap">
-                  <div class="muted" id="liveHint">Press start to request a screenshare.</div>
-                  <img id="liveFrame" alt="Live stream" />
-                </div>
-              </div>
-            </div>
-            <div class="card scroll-card">
-              <div class="head">
-                <div><div class="eyebrow">Live log</div><h3>Events</h3></div>
-              </div>
-              <div id="timeline" class="feed"></div>
-            </div>
-          </div>
-        </section>
-
-        <section id="tab-shots" class="view" aria-hidden="true">
+        <section id="tab-shots" class="view active">
           <div class="card scroll-card">
             <div class="head">
               <div><div class="eyebrow">Captures</div><h3>Screenshots</h3></div>
