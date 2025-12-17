@@ -342,7 +342,12 @@ PANEL_HTML = r"""<!doctype html>
   </style>
 </head>
 <body>
-  <div id="loader" class="loader"><div class="load-bar"><span></span></div></div>
+  <div id="loader" class="loader">
+    <div>
+      <div class="load-bar"><span></span></div>
+      <div id="loadPct" style="margin-top:10px; text-align:center; color:var(--muted); font-weight:700;">0%</div>
+    </div>
+  </div>
   <div class="page">
     <header class="hero">
       <div>
@@ -490,7 +495,7 @@ PANEL_HTML = r"""<!doctype html>
     let hasSelectedTag = false;
     let liveActive = false;
     let startedAt = Date.now(); setInterval(()=>{ const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60; el.uptime.textContent=${String(m).padStart(2,'0')}:; },1000);
-    window.addEventListener('load', ()=> el.loader?.classList.add('hide'));
+    window.addEventListener('load', ()=> { el.loader?.classList.add('hide'); });
 
     function setStatus(ok){ el.dot.className='dot '+(ok?'ok':'bad'); el.stxt.textContent = ok ? 'Connected' : 'Reconnecting...'; }
     function toast(t){ const n=document.getElementById('toast'); n.textContent=t; n.style.opacity='1'; setTimeout(()=> n.style.opacity='0', 1600); }
