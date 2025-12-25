@@ -152,9 +152,9 @@ CONTROL_HTML = """<!doctype html>
   <title>Controller</title>
   <style>
     :root { --bg:#07030f; --card:#0e0a1a; --border:#21183a; --accent:#9b5cff; --accent2:#6b21ff; --text:#e7e7ff; --muted:#b8b5d3; --danger:#ef4444; --success:#22c55e; }
-    body { font-family: 'Segoe UI', sans-serif; background: radial-gradient(circle at 20% 20%, rgba(107,33,255,0.15), transparent 25%), radial-gradient(circle at 80% 0%, rgba(155,92,255,0.15), transparent 25%), var(--bg); color: var(--text); margin: 0; padding: 24px; }
-    .layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
-    .card { background: linear-gradient(145deg, rgba(14,10,26,0.92), rgba(18,14,30,0.95)); border: 1px solid var(--border); border-radius: 14px; padding: 18px; box-shadow: 0 10px 35px rgba(0,0,0,0.35); }
+    body { font-family: 'Segoe UI', sans-serif; background-color: var(--bg); background-image: radial-gradient(circle at 20% 20%, rgba(107,33,255,0.18), transparent 28%), radial-gradient(circle at 80% 0%, rgba(155,92,255,0.18), transparent 28%), linear-gradient(135deg, rgba(155,92,255,0.08), rgba(107,33,255,0.05)); background-repeat: no-repeat; background-attachment: fixed; background-size: cover; background-position: center; color: var(--text); margin: 0; padding: 24px; min-height: 100vh; }
+    .layout { display: grid; grid-template-columns: minmax(320px, 520px) 1fr; gap: 16px; align-items: start; }
+    .card { background: linear-gradient(145deg, rgba(14,10,26,0.94), rgba(18,14,30,0.97)); border: 1px solid var(--border); border-radius: 14px; padding: 18px; box-shadow: 0 10px 35px rgba(0,0,0,0.35); }
     h1 { margin: 0 0 12px; font-size: 18px; letter-spacing: 0.3px; }
     label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 13px; }
     input, button { font-family: inherit; }
@@ -165,48 +165,61 @@ CONTROL_HTML = """<!doctype html>
     small { color: var(--muted); }
     img { max-width: 100%; border-radius: 10px; border: 1px solid var(--border); }
     .pill { padding: 8px 12px; border-radius: 999px; border: 1px solid var(--border); background: #0c0817; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+    .tab-btn { background: #140c24; color: var(--muted); border: 1px solid var(--border); padding: 8px 12px; border-radius: 8px; cursor: pointer; }
+    .tab-btn.active { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #0b0419; border-color: transparent; }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
   </style>
 </head>
 <body>
   <div class="layout">
     <div class="card">
-      <h1>Display Surprise</h1>
-      <p style="margin: 4px 0 12px; color:var(--muted);">Sends local <code>suprise.png</code>/<code>surprise.png</code> and <code>sound.mp3</code> to the receiver and triggers display.</p>
-      <div class="row">
-        <form method="post" action="/ui/surprise">
-          <button type="submit">Send & Display</button>
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="surprise">Surprise</button>
+        <button class="tab-btn" data-tab="select">Receivers</button>
+        <button class="tab-btn" data-tab="openclose">Open & Close :3</button>
+        <button class="tab-btn" data-tab="volume">Volume ;0</button>
+      </div>
+      <div class="tab-pane active" data-tab="surprise">
+        <h1>Display Surprise</h1>
+        <p style="margin: 4px 0 12px; color:var(--muted);">Sends local <code>suprise.png</code>/<code>surprise.png</code> and <code>sound.mp3</code> to the receiver and triggers display.</p>
+        <div class="row">
+          <form method="post" action="/ui/surprise">
+            <button type="submit">Send & Display</button>
+          </form>
+          <form method="post" action="/ui/gif/stop">
+            <button class="secondary" type="submit">Stop Display</button>
+          </form>
+        </div>
+      </div>
+      <div class="tab-pane" data-tab="select">
+        <h1>Select Receiver</h1>
+        <div id="receiver-buttons" class="row" style="flex-wrap: wrap;"></div>
+        <div style="margin-top:10px; font-size:13px; color:var(--muted);">Offline</div>
+        <div id="receiver-offline" class="row" style="flex-wrap: wrap;"></div>
+      </div>
+      <div class="tab-pane" data-tab="openclose">
+        <h1>Open & Close :3</h1>
+        <form method="post" action="/ui/open">
+          <label for="url">Open website</label>
+          <input id="url" name="url" type="text" placeholder="https://google.com" required>
+          <button type="submit">Open</button>
         </form>
-        <form method="post" action="/ui/gif/stop">
-          <button class="secondary" type="submit">Stop Display</button>
+        <form method="post" action="/ui/close" style="margin-top:12px;">
+          <label for="proc">Close process (name.exe)</label>
+          <input id="proc" name="proc" type="text" placeholder="chrome.exe" required>
+          <button class="secondary" type="submit">Close</button>
         </form>
       </div>
-    </div>
-    <div class="card">
-      <h1>Select Receiver</h1>
-      <div id="receiver-buttons" class="row" style="flex-wrap: wrap;"></div>
-      <div style="margin-top:10px; font-size:13px; color:var(--muted);">Offline</div>
-      <div id="receiver-offline" class="row" style="flex-wrap: wrap;"></div>
-    </div>
-    <div class="card">
-      <h1>Open & Close :3</h1>
-      <form method="post" action="/ui/open">
-        <label for="url">Open website</label>
-        <input id="url" name="url" type="text" placeholder="https://google.com" required>
-        <button type="submit">Open</button>
-      </form>
-      <form method="post" action="/ui/close" style="margin-top:12px;">
-        <label for="proc">Close process (name.exe)</label>
-        <input id="proc" name="proc" type="text" placeholder="chrome.exe" required>
-        <button class="secondary" type="submit">Close</button>
-      </form>
-    </div>
-    <div class="card">
-      <h1>Volume ;0</h1>
-      <form method="post" action="/ui/volume">
-        <label for="level">Set volume (0-100)</label>
-        <input id="level" name="level" type="number" min="0" max="100" step="1" value="50" required>
-        <button type="submit">Set Volume</button>
-      </form>
+      <div class="tab-pane" data-tab="volume">
+        <h1>Volume ;0</h1>
+        <form method="post" action="/ui/volume">
+          <label for="level">Set volume (0-100)</label>
+          <input id="level" name="level" type="number" min="0" max="100" step="1" value="50" required>
+          <button type="submit">Set Volume</button>
+        </form>
+      </div>
     </div>
     <div class="card">
       <h1>Live Screen (5s)</h1>
@@ -273,6 +286,16 @@ CONTROL_HTML = """<!doctype html>
         }
       } catch (e) { /* ignore */ }
     }
+    // tabs
+    const tabButtons = document.querySelectorAll('.tab-btn');
+    const tabPanes = document.querySelectorAll('.tab-pane');
+    function activateTab(id) {
+      tabButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.tab === id));
+      tabPanes.forEach(pane => pane.classList.toggle('active', pane.dataset.tab === id));
+    }
+    tabButtons.forEach(btn => btn.addEventListener('click', () => activateTab(btn.dataset.tab)));
+
+    activateTab('surprise');
     refreshReceivers();
     refreshScreen();
     setInterval(refreshReceivers, 5000);
