@@ -3,16 +3,15 @@ import asyncio
 import importlib
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Set, List, Dict, Optional
+from typing import Optional
 
 
 def ensure_dependencies():
     """
-    Install required third-party packages before the rest of the app imports.
+    Install the small set of third-party packages needed for the controller.
     """
     required = {
         "discord": "discord.py",
@@ -38,119 +37,20 @@ ensure_dependencies()
 
 import discord
 from discord.ext import commands
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
-# ====== CONFIG (use env vars) ======
+# ====== CONFIG ======
 CONTROLLER_TOKEN = os.getenv("CONTROLLER_TOKEN", "")
 COMMAND_CHANNEL_ID = int(os.getenv("COMMAND_CHANNEL_ID", "0"))
-TARGET_CHANNEL_ID  = int(os.getenv("TARGET_CHANNEL_ID", "0"))
-BOT_TAG = "[BOT1]"
-TAG_BROADCAST_CHANNEL_ID = 1450113302104641618  # channel to post discovered tags
+TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "0"))
+BOT_TAG = os.getenv("BOT_TAG", "[BOT1]")
+# =====================
 
 assert CONTROLLER_TOKEN, "Set CONTROLLER_TOKEN env var"
 assert COMMAND_CHANNEL_ID and TARGET_CHANNEL_ID, "Set COMMAND/TARGET channel IDs"
-# ===================================
 
-KNOWN_TAGS: Set[str] = {BOT_TAG}
-ACTIVE_BOT_TAG = BOT_TAG
-
-# Storage for files (screenshots)
 ROOT_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path("./data")
-DATA_DIR.mkdir(exist_ok=True)
-
-TAG_PATTERN = re.compile(r"^\s*(\[[^\]\r\n]{2,32}\])")
-TAG_ANYWHERE = re.compile(r"(\[[^\[\]\r\n]{2,32}\])")
-
-def _register_tag(tag: str) -> str:
-    """
-    Normalize and record a tag string.
-    """
-    tag_clean = tag.strip()
-    if not tag_clean:
-        return ACTIVE_BOT_TAG
-    KNOWN_TAGS.add(tag_clean)
-    print(f"[TAG] registered: {tag_clean}")
-    return tag_clean
-
-
-def _set_active_tag(tag: str) -> str:
-    """
-    Update the active tag used for outgoing commands.
-    """
-    global ACTIVE_BOT_TAG
-    ACTIVE_BOT_TAG = _register_tag(tag)
-    return ACTIVE_BOT_TAG
-
-
-def _extract_tag(content: str):
-    """
-    Try to pull a leading [TAG] prefix from a receiver message.
-    """
-    if not content:
-        return None
-    match = TAG_PATTERN.match(content)
-    if match:
-        tag = match.group(1)
-        print(f"[TAG] leading match: {tag} from {content}")
-        return _register_tag(tag)
-    match_any = TAG_ANYWHERE.search(content)
-    if match_any:
-        tag = match_any.group(1)
-        print(f"[TAG] anywhere match: {tag} from {content}")
-        return _register_tag(tag)
-    return None
-
-
-def _resolve_tag(tag: str = "") -> str:
-    """
-    Use the provided tag or fall back to the current active tag.
-    """
-    if tag and tag.strip():
-        return _register_tag(tag)
-    return ACTIVE_BOT_TAG
-
-
-def play_tune(duration_sec: float = 5.0) -> None:
-    """
-    Play a short Jingle Bells motif (~5 seconds).
-    """
-    try:
-        if os.name == "nt":
-            import winsound
-
-            # Jingle Bells: E E E | E E E | E G C D E
-            seq = [
-                (659, 300), (659, 300), (659, 600),  # E E E
-                (0,   120),
-                (659, 300), (659, 300), (659, 600),  # E E E
-                (0,   120),
-                (659, 300), (784, 300), (523, 300),  # E G C
-                (587, 300), (659, 700),              # D E
-            ]
-            total = sum(t for _, t in seq)
-            scale = duration_sec * 1000 / total if total else 1.0
-            for freq, ms in seq:
-                dur = max(60, int(ms * scale))
-                if freq > 0:
-                    winsound.Beep(int(freq), dur)
-                else:
-                    import time
-                    time.sleep(dur / 1000)
-        else:
-            import time
-
-            end = time.time() + duration_sec
-            pattern = [0.1, 0.1, 0.2, 0.1, 0.1, 0.2, 0.1, 0.15, 0.1, 0.1, 0.2]
-            idx = 0
-            while time.time() < end:
-                print("\a", end="", flush=True)
-                time.sleep(pattern[idx % len(pattern)])
-                idx += 1
-    except Exception:
-        print("\a", end="", flush=True)
 
 # ---------- Discord controller bot ----------
 intents = discord.Intents.default()
@@ -159,7 +59,8 @@ bot = commands.Bot(command_prefix="?", intents=intents)
 _controller_ready = asyncio.Event()
 _controller_error: Optional[str] = None
 
-async def _get_channel(channel_id: int):
+
+async def _get_channel(channel_id: int) -> discord.TextChannel:
     ch = bot.get_channel(channel_id)
     if ch is None:
         ch = await bot.fetch_channel(channel_id)
@@ -183,18 +84,18 @@ async def _wait_controller_ready(timeout: float = 8.0):
     if _controller_error:
         raise HTTPException(status_code=503, detail=f"Discord bot failed to start: {_controller_error}")
 
+
 @bot.event
 async def on_ready():
     print(f"Controller bot logged in as {bot.user}")
-    play_tune()
     global _controller_error
     _controller_error = None
     _controller_ready.set()
 
-# WebSocket broadcast hub
+
 class Hub:
     def __init__(self):
-        self.clients: Set[WebSocket] = set()
+        self.clients: set[WebSocket] = set()
         self.lock = asyncio.Lock()
 
     async def connect(self, ws: WebSocket):
@@ -207,8 +108,8 @@ class Hub:
             self.clients.discard(ws)
 
     async def broadcast(self, payload: dict):
-        dead = []
         msg = json.dumps(payload)
+        dead = []
         async with self.lock:
             for ws in list(self.clients):
                 try:
@@ -218,374 +119,84 @@ class Hub:
             for ws in dead:
                 self.clients.discard(ws)
 
+
 hub = Hub()
 
-# Listen for receiver outputs and push to UI
+
 @bot.event
 async def on_message(message: discord.Message):
     await bot.process_commands(message)
-    if message.author.bot and message.channel.id in {TARGET_CHANNEL_ID, TAG_BROADCAST_CHANNEL_ID}:
-        tag = _extract_tag(message.content or "")
-        print(f"[MSG] from {message.author} content={message.content!r} tag_detected={tag}")
-        new_tag = False
-        if tag:
-            if tag not in KNOWN_TAGS:
-                new_tag = True
-            _register_tag(tag)
-            if ACTIVE_BOT_TAG == BOT_TAG:
-                _set_active_tag(tag)
-        if new_tag:
-            try:
-                tag_ch = await _get_channel(TAG_BROADCAST_CHANNEL_ID)
-                await tag_ch.send(f"Discovered receiver tag: {tag}")
-            except Exception as exc:
-                print(f"[TAG] failed to broadcast {tag}: {exc}")
-        is_live_frame = "LIVE_STREAM_FRAME" in (message.content or "")
-        live_http_url = None
-        if "LIVE_STREAM_HTTP" in (message.content or ""):
-            parts = message.content.split(maxsplit=3)
-            if len(parts) >= 3:
-                live_http_url = parts[2].strip()
+    if message.author.bot and message.channel.id == TARGET_CHANNEL_ID:
         payload = {
-            "type": "text",
             "author": str(message.author),
-            "content": message.content,
-            "attachments": [],
+            "content": message.content or "",
             "ts": message.created_at.isoformat(),
-            "tag": tag,
-            "is_live_frame": is_live_frame,
-            "live_http_url": live_http_url,
         }
-        # Save any attachments (e.g., screenshot.png)
-        for att in message.attachments:
-            if is_live_frame:
-                payload["attachments"].append({"filename": att.filename, "url": att.url})
-                continue
-            try:
-                b = await att.read()
-                fname = f"{att.id}_{att.filename}"
-                fpath = DATA_DIR / fname
-                with open(fpath, "wb") as f:
-                    f.write(b)
-                payload["attachments"].append({
-                    "filename": att.filename,
-                    "url": f"/files/{fname}"
-                })
-            except Exception as e:
-                payload["attachments"].append({"filename": att.filename, "error": str(e)})
         await hub.broadcast(payload)
 
-# ---------- FastAPI app ----------
-app = FastAPI(title="Local Controller Panel")
-app.mount("/files", StaticFiles(directory=str(DATA_DIR)), name="files")
 
-# NEW: list files for screenshots tab persistence
-@app.get("/files_index")
-async def files_index(limit: int = 24):
-    items: List[Dict[str, str]] = []
-    for p in sorted(DATA_DIR.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True)[:limit]:
-        if p.is_file():
-            items.append({
-                "filename": p.name.split("_", 1)[-1],
-                "url": f"/files/{p.name}",
-                "mtime": p.stat().st_mtime
-            })
-    return {"files": items}
+# ---------- FastAPI app ----------
+app = FastAPI(title="GIF Controller")
 
 PANEL_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Ghost Control</title>
+  <title>GIF Display Control</title>
   <style>
-    :root{
-      --bg:#05060c; --panel:#0d111c; --card:#11192a; --line:#1c263a; --text:#e7edf8; --muted:#9aa6c2;
-      --accent:#5fe0c5; --accent2:#4d82ff; --danger:#ff6b6b;
-    }
-    *{box-sizing:border-box;} body{margin:0; font:15px/1.55 "Inter","Segoe UI",Arial,sans-serif; background:radial-gradient(80% 60% at 10% 0%, rgba(93,175,255,.16), transparent), radial-gradient(65% 55% at 85% 0%, rgba(95,224,197,.12), transparent), var(--bg); color:var(--text);}
-    a{color:inherit;}
-    .page{max-width:1200px; margin:0 auto; padding:20px 12px 42px;}
-    header.hero{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:14px 16px; border:1px solid var(--line); border-radius:14px; background:rgba(16,21,33,.85); backdrop-filter:blur(6px);}
-    h1{margin:4px 0 0; font-size:24px;} .eyebrow{letter-spacing:0.28px; text-transform:uppercase; font-size:12px; color:var(--muted);}
-    .status{display:flex; gap:8px; flex-wrap:wrap; align-items:center;} .pill{display:inline-flex; align-items:center; gap:8px; padding:7px 11px; border:1px solid var(--line); border-radius:10px; background:var(--card); font-weight:700;} .dot{width:10px; height:10px; border-radius:50%; background:#f5c04a;} .dot.ok{background:#5fe0c5;} .dot.bad{background:var(--danger);}
-    .tag-control{display:grid; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:var(--card); min-width:240px;}
-    .tag-row{display:flex; gap:6px; align-items:center; flex-wrap:wrap;} .tag-row input{flex:1; min-width:160px;}
-    .tag-meta{font-size:12px; color:var(--muted);}
-    .tag-box{border:1px solid var(--line); background:var(--card); padding:8px 10px; border-radius:10px; min-width:200px;}
-    .tag-list{display:flex; flex-wrap:wrap; gap:6px; max-width:320px;}
-    .tag-chip{border:1px solid var(--line); padding:5px 8px; border-radius:8px; background:#0c1220; cursor:pointer; font-weight:700;} .tag-chip:hover{border-color:var(--accent); color:var(--accent);}
-    .shell{margin-top:16px; border:1px solid var(--line); border-radius:16px; background:var(--panel); box-shadow:0 20px 50px rgba(0,0,0,.35); overflow:hidden;}
-    .tabbar{display:flex; gap:8px; padding:12px; border-bottom:1px solid var(--line); background:rgba(17,25,42,.75); overflow-x:auto;}
-    .tab-btn{flex:1; min-width:120px; border:1px solid var(--line); background:var(--card); color:var(--text); padding:10px 12px; border-radius:10px; cursor:pointer; font-weight:700; letter-spacing:0.2px; transition:all .18s ease;} 
-    .tab-btn.active{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#061021; border-color:transparent; transform:translateY(-1px); box-shadow:0 12px 30px rgba(79,136,255,.35);}
-    .panel{padding:18px 18px 20px; min-height:480px; position:relative;}
-    .view{position:absolute; inset:0; padding:18px; opacity:0; transform:translateY(10px); transition:opacity .22s ease, transform .22s ease; pointer-events:none;}
-    .view.active{opacity:1; transform:translateY(0); pointer-events:auto;}
-    .grid{display:grid; grid-template-columns:1.05fr .95fr; gap:14px;} @media(max-width:960px){.grid{grid-template-columns:1fr;}} @media(max-width:720px){.grid{grid-template-columns:1fr; gap:10px;}}
-    .card{border:1px solid var(--line); border-radius:12px; background:var(--card); padding:14px;}
-    .head{display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;} h3{margin:0;}
-    .btn{border:1px solid var(--line); background:var(--card); color:var(--text); padding:9px 12px; border-radius:10px; font-weight:700; cursor:pointer; transition:transform .08s ease, filter .15s ease;} .btn:hover{filter:brightness(1.06); transform:translateY(-1px);} .btn.primary{background:linear-gradient(120deg,var(--accent),var(--accent2)); color:#061021; border:none;} .btn.danger{background:var(--danger); border-color:var(--danger); color:#061021;} .btn.small{padding:7px 10px; font-size:13px;}
-    .stack{display:grid; gap:10px;} .row{display:flex; gap:8px; flex-wrap:wrap;} input{flex:1; min-width:180px; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0a0f1a; color:#e7edf8;} label{font-weight:700;}
-    .feed{display:flex; flex-direction:column; gap:10px; max-height:420px; overflow:auto; padding-right:4px;} .feed.small{max-height:360px;} .item{border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:rgba(14,19,30,.9);} .meta{font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-word;}
-    .gallery{display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:10px;} .shot{border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#0b0f19; cursor:pointer;} .shot img{width:100%; display:block;}
-    .live-frame{border:1px solid var(--line); border-radius:12px; background:radial-gradient(60% 60% at 30% 30%, rgba(95,224,197,.1), transparent), radial-gradient(50% 60% at 70% 40%, rgba(77,130,255,.12), transparent), #0c1220; min-height:220px; height:60vh; max-height:720px; display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden;}
-    .live-frame img{max-width:100%; width:100%; height:100%; object-fit:contain; display:none;}
-    .live-frame.active img{display:block;}
-    .live-frame .muted{position:absolute; inset:auto; margin:auto;}
-    .live-controls{gap:6px; flex-wrap:wrap;} .input-compact{max-width:90px;}
-    @media(max-width:640px){
-      body{font-size:14px;}
-      .tab-btn{flex:1 0 auto;}
-      .card{padding:12px;}
-      .head{flex-direction:column; align-items:flex-start;}
-      .live-frame{min-height:200px; height:45vh;}
-    }
-    #toast{position:fixed; left:50%; bottom:18px; transform:translateX(-50%); padding:9px 14px; border-radius:12px; border:1px solid var(--line); background:var(--panel); font-weight:700; opacity:0; transition:opacity .18s ease; z-index:120;}
+    *{box-sizing:border-box;}
+    body{margin:0; font:16px/1.6 "Segoe UI",Arial,sans-serif; background:#0b0f1c; color:#e9eef7; display:flex; justify-content:center; align-items:center; min-height:100vh;}
+    .card{width:440px; max-width:90vw; background:#12192b; border:1px solid #1e2942; border-radius:14px; padding:24px; box-shadow:0 20px 55px rgba(0,0,0,.35);}
+    h1{margin:0 0 8px; font-size:22px;}
+    p{margin:0 0 16px; color:#9fb0d2;}
+    .buttons{display:flex; gap:12px; margin-bottom:18px;}
+    button{flex:1; padding:12px 14px; border-radius:10px; border:1px solid #283556; background:#1a2540; color:#e9eef7; font-weight:700; cursor:pointer; transition:transform .08s ease, filter .16s ease;}
+    button.primary{background:linear-gradient(120deg,#4ad9c8,#3f7bff); color:#061021; border:none;}
+    button:hover{filter:brightness(1.05); transform:translateY(-1px);}
+    #log{border:1px solid #1e2942; background:#0f1526; border-radius:10px; padding:12px; max-height:240px; overflow:auto; display:flex; flex-direction:column; gap:8px; font-family:Consolas,monospace; font-size:13px;}
+    .status{display:flex; gap:8px; align-items:center; margin-bottom:14px;}
+    .dot{width:10px; height:10px; border-radius:50%; background:#f5c04a;}
+    .dot.ok{background:#5fe0c5;}
   </style>
 </head>
 <body>
-  <div class="page">
-    <header class="hero">
-      <div>
-        <div class="eyebrow">Receiver console</div>
-        <h1>Ghost Control</h1>
-        <div class="muted">Minimal live control surface.</div>
-      </div>
-      <div class="status">
-        <div class="pill"><span id="dot" class="dot"></span><span id="stxt">Connecting...</span></div>
-        <div class="pill">Cmd {COMMAND_CHANNEL_ID}</div>
-        <div class="tag-control">
-          <div class="tag-meta">Target tag</div>
-          <div class="tag-row">
-            <input id="tagInput" list="tagOptions" placeholder="[HOST-XXXX]" value="{BOT_TAG}"/>
-            <datalist id="tagOptions"></datalist>
-            <button class="btn small" onclick="chooseTag()">Use</button>
-            <button class="btn small" onclick="refreshTags()" title="Refresh known tags">&#8635;</button>
-          </div>
-          <div class="tag-meta">Active: <span id="tagActive">{BOT_TAG}</span></div>
-        </div>
-        <div class="tag-box">
-          <div class="tag-meta">Seen tags (click to copy)</div>
-          <div id="tagList" class="tag-list"></div>
-        </div>
-        <div class="pill" id="uptime">00:00</div>
-      </div>
-    </header>
-
-    <div class="shell">
-      <div class="tabbar">
-        <button class="tab-btn active" data-tab="dash">Dashboard</button>
-        <button class="tab-btn" data-tab="live">Live stream</button>
-        <button class="tab-btn" data-tab="shots">Screenshots</button>
-        <button class="tab-btn" data-tab="procs">Processes</button>
-        <button class="tab-btn" data-tab="logs">Logs</button>
-      </div>
-      <div class="panel">
-        <div id="tab-dash" class="view active">
-          <div class="grid">
-            <div class="card">
-              <div class="head">
-                <div><div class="eyebrow">Quick actions</div><h3>Commands</h3></div>
-              </div>
-              <div class="stack">
-                <div class="row">
-                  <button class="btn" onclick="doShot()">Screenshot</button>
-                  <button class="btn" onclick="doProcs()">Processes</button>
-                  <button class="btn danger" onclick="confirmPower()">Power off</button>
-                  <button class="btn primary" onclick="displayGif()">Display gif</button>
-                  <button class="btn danger" onclick="confirmPanic()">Panic</button>
-                </div>
-                <div>
-                  <label for="volPercent">Set volume (0-100)</label>
-                  <div class="row">
-                    <input id="volPercent" placeholder="100" value="100" style="max-width:120px"/>
-                    <button class="btn" onclick="setVolume()">Set</button>
-                  </div>
-                </div>
-                <div>
-                  <label for="openUrl">Open link</label>
-                  <div class="row">
-                    <input id="openUrl" placeholder="https://example.com"/>
-                    <button class="btn" onclick="openLink()">Open</button>
-                  </div>
-                </div>
-                <div>
-                  <label for="procName">Kill process</label>
-                  <div class="row">
-                    <input id="procName" placeholder="chrome.exe"/>
-                    <button class="btn" onclick="killProc()">Kill</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div class="card">
-              <div class="head">
-                <div><div class="eyebrow">Feed</div><h3>Live log</h3></div>
-              </div>
-              <div id="timeline" class="feed"></div>
-            </div>
-          </div>
-        </div>
-
-        <div id="tab-live" class="view" aria-hidden="true">
-          <div class="card" style="height:100%; display:flex; flex-direction:column; gap:14px;">
-            <div class="head">
-              <div><div class="eyebrow">Live</div><h3>Screen share</h3></div>
-              <div id="liveControls" class="row live-controls">
-                <input id="liveMonitor" class="input-compact" placeholder="1" value="1" title="Monitor index"/>
-                <button class="btn primary" onclick="startLiveStream()">Start</button>
-                <button class="btn" onclick="stopLiveStream()">Stop</button>
-              </div>
-            </div>
-            <div id="liveGate" class="pill" style="background:rgba(255,255,255,0.03); color:var(--muted);">
-              Select a bot first to start a live stream.
-            </div>
-            <div id="liveBody" class="stack" style="gap:12px;">
-              <div class="pill" style="display:flex; gap:8px; align-items:center; width:max-content;">
-                <span id="liveDot" class="dot"></span><span id="liveStatus">Idle</span>
-              </div>
-              <div class="live-frame">
-                <div class="muted" id="liveHint">Click start to request a screenshare.</div>
-                <img id="liveFrame" alt="Live stream" />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div id="tab-shots" class="view" aria-hidden="true">
-          <div class="card" style="height:100%; display:flex; flex-direction:column;">
-            <div class="head">
-              <div><div class="eyebrow">Captures</div><h3>Screenshots</h3></div>
-            </div>
-            <div id="gallery" class="gallery"></div>
-          </div>
-        </div>
-
-        <div id="tab-procs" class="view" aria-hidden="true">
-          <div class="card" style="height:100%; display:flex; flex-direction:column;">
-            <div class="head">
-              <div><div class="eyebrow">Processes</div><h3>Process lists</h3></div>
-              <button class="btn" onclick="doProcs()">Refresh</button>
-            </div>
-            <div id="procFeed" class="feed small"></div>
-          </div>
-        </div>
-
-        <div id="tab-logs" class="view" aria-hidden="true">
-          <div class="card" style="height:100%; display:flex; flex-direction:column;">
-            <div class="head">
-              <div><div class="eyebrow">History</div><h3>Logs</h3></div>
-              <button class="btn" onclick="clearLogs()">Clear</button>
-            </div>
-            <div id="logFeed" class="feed small"></div>
-          </div>
-        </div>
-      </div>
+  <div class="card">
+    <h1>GIF Display</h1>
+    <p>Send start/stop commands to the receiver and watch responses.</p>
+    <div class="status"><span id="wsDot" class="dot"></span><span id="wsText">Connecting...</span></div>
+    <div class="buttons">
+      <button id="startBtn" class="primary">Start GIF display</button>
+      <button id="stopBtn">Stop GIF display</button>
     </div>
+    <div id="log"></div>
   </div>
-
-  <div id="toast"></div>
-
   <script>
-    const el = {dot:document.getElementById('dot'), stxt:document.getElementById('stxt'), timeline:document.getElementById('timeline'), gallery:document.getElementById('gallery'), procFeed:document.getElementById('procFeed'), logFeed:document.getElementById('logFeed'), uptime:document.getElementById('uptime'), tagActive:document.getElementById('tagActive'), tagInput:document.getElementById('tagInput'), tagList:document.getElementById('tagList'), liveStatus:document.getElementById('liveStatus'), liveDot:document.getElementById('liveDot'), liveFrame:document.getElementById('liveFrame'), liveGate:document.getElementById('liveGate'), liveBody:document.getElementById('liveBody'), liveHint:document.getElementById('liveHint'), liveControls:document.getElementById('liveControls'), liveMonitor:document.getElementById('liveMonitor')};
-    const defaultTag = "{BOT_TAG}";
-    let currentTag = defaultTag;
-    let knownTags = new Set([currentTag]);
-    let hasSelectedTag = false;
-    let liveActive = false;
-    let startedAt = Date.now(); setInterval(()=>{ const s=((Date.now()-startedAt)/1000|0); const m=(s/60|0), ss=s%60; el.uptime.textContent=`${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; },1000);
-
-    function setStatus(ok){ el.dot.className='dot '+(ok?'ok':'bad'); el.stxt.textContent = ok ? 'Connected' : 'Reconnecting...'; }
-    function toast(t){ const n=document.getElementById('toast'); n.textContent=t; n.style.opacity='1'; setTimeout(()=> n.style.opacity='0', 1500); }
-
-    function copyTag(tag){ if(!tag) return; if(navigator.clipboard){ navigator.clipboard.writeText(tag).catch(()=>{}); toast('Copied '+tag); } else { prompt('Copy tag', tag); } }
-    function renderTags(){
-      if(el.tagActive) el.tagActive.textContent = currentTag || '(none)';
-      const dl=document.getElementById('tagOptions');
-      if(dl){
-        dl.innerHTML='';
-        Array.from(knownTags).sort().forEach(t=>{ const o=document.createElement('option'); o.value=t; dl.appendChild(o); });
-      }
-      if(el.tagInput && !el.tagInput.value) el.tagInput.value=currentTag;
-      if(el.tagList){
-        el.tagList.innerHTML='';
-        Array.from(knownTags).sort().forEach(t=>{
-          const chip=document.createElement('div');
-          chip.className='tag-chip';
-          chip.textContent=t;
-          chip.onclick=()=>{ copyTag(t); if(el.tagInput) el.tagInput.value=t; };
-          el.tagList.appendChild(chip);
-        });
-      }
-      updateLiveGate();
-    }
-    function updateLiveGate(){ const ready=hasSelectedTag || (currentTag && currentTag!==defaultTag); if(ready) hasSelectedTag=true; if(el.liveGate) el.liveGate.style.display = ready?'none':'flex'; if(el.liveBody) el.liveBody.style.opacity = ready?'1':'0.55'; if(el.liveControls){ el.liveControls.querySelectorAll('button').forEach(b=> b.disabled=!ready); } }
-    async function refreshTags(){ try{ const r = await fetch('/tags'); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; if(currentTag && currentTag!==defaultTag) hasSelectedTag=true; } catch(e){} renderTags(); updateLiveGate(); }
-    async function chooseTag(){ const val=(el.tagInput?.value||'').trim(); if(!val){ toast('Enter a tag'); return; } currentTag = val; hasSelectedTag=true; try{ const r = await fetch('/tags/select?tag='+encodeURIComponent(val), {method:'POST'}); const data = await r.json().catch(()=>({})); if(data.tags) knownTags = new Set(data.tags); if(data.active) currentTag = data.active; toast('Now targeting '+currentTag); } catch(e){ toast('Could not set tag'); } renderTags(); updateLiveGate(); }
-    function withTag(path){ const u=new URL(path, window.location.origin); if(currentTag) u.searchParams.set('tag', currentTag); return u.pathname + u.search; }
-    const tagRegex = /(^|\\s)(\\[[^\\[\\]\\r\\n]{2,32}\\])/;
-    function parseTag(text){ const m=(text||'').match(tagRegex); return m?m[2]:null; }
-    function touchTagFromMessage(obj){
-      const found = (obj&&obj.tag) || parseTag(obj&&obj.content);
-      if(found){
-        knownTags.add(found);
-        const isDefault=currentTag===defaultTag || !currentTag || !knownTags.has(currentTag);
-        if(isDefault){ currentTag = found; hasSelectedTag=true; }
-        renderTags(); updateLiveGate();
-      }
-    }
-
-    function node(author, content, ts){ const d=document.createElement('div'); d.className='item'; const m=document.createElement('div'); m.className='meta'; const time=ts? new Date(ts).toLocaleString(): new Date().toLocaleString(); m.textContent = `${time} - ${author}`; const b=document.createElement('div'); b.textContent = content || ''; d.appendChild(m); d.appendChild(b); return d; }
-    function addFeed(container, div, limit=200){ container.prepend(div); while(container.children.length>limit) container.lastChild.remove(); }
-    function addShot(url){ if(!url) return; const wrap=document.createElement('div'); wrap.className='shot'; const img=document.createElement('img'); img.loading='lazy'; img.src=url; wrap.onclick=()=> window.open(url,'_blank'); wrap.appendChild(img); el.gallery.prepend(wrap); while(el.gallery.children.length>60) el.gallery.lastChild.remove(); }
-    function addProc(text){ addFeed(el.procFeed, node('Processes', text, Date.now()), 120); }
-    function addLog(div){ addFeed(el.logFeed, div, 300); }
-
-    function setTab(id){
-      ['dash','live','shots','procs','logs'].forEach(t=>{
-        const view=document.getElementById(`tab-${t}`);
-        const active=t===id;
-        view.classList.toggle('active', active);
-        view.setAttribute('aria-hidden', active?'false':'true');
-      });
-      document.querySelectorAll('.tab-btn').forEach(b=> b.classList.toggle('active', b.dataset.tab===id));
-    }
-    document.querySelectorAll('.tab-btn').forEach(btn=> btn.onclick = ()=> setTab(btn.dataset.tab));
-
-    function setLiveStatus(text, state='idle'){ liveActive = state==='ok'; if(el.liveStatus) el.liveStatus.textContent=text; if(el.liveDot){ el.liveDot.className='dot'+(state==='ok'?' ok': state==='error'?' bad':''); } if(state!=='ok' && el.liveFrame){ el.liveFrame.removeAttribute('src'); if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.remove('active'); if(el.liveHint) el.liveHint.style.display='block'; } }
-    function handleLiveFrame(obj){ if(!(obj.attachments&&obj.attachments.length)) return; const url=obj.attachments[0].url+(obj.attachments[0].url.includes('?')?'&':'?')+'t='+(Date.now()); if(el.liveFrame){ el.liveFrame.src=url; if(el.liveFrame.parentElement) el.liveFrame.parentElement.classList.add('active'); el.liveFrame.style.display='block'; if(el.liveHint) el.liveHint.style.display='none'; el.liveFrame.onload=()=> el.liveFrame.parentElement?.classList.add('active'); el.liveFrame.onerror=()=> setLiveStatus('Stream error', 'error'); } setLiveStatus('Receiving frames', 'ok'); }
-    function connectWS(){ setStatus(false); const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen = ()=> setStatus(true); ws.onclose = ()=> { setStatus(false); setTimeout(connectWS, 1200); }; ws.onmessage = ev => { const obj = JSON.parse(ev.data); if(obj.type !== 'text') return; const content=(obj.content||'').toUpperCase(); touchTagFromMessage(obj); const isLiveFrame=obj.is_live_frame===true || content.includes('LIVE_STREAM_FRAME'); const isLiveStopped=content.includes('LIVE_STREAM_STOPPED'); const isLiveError=content.includes('LIVE_STREAM_ERROR'); if(isLiveFrame){ handleLiveFrame(obj); return; } if(isLiveStopped){ setLiveStatus('Stopped', 'idle'); } if(isLiveError){ setLiveStatus('Stream error', 'error'); } const msg = node(obj.author, obj.content, obj.ts); addFeed(el.timeline, msg.cloneNode(true)); addLog(msg.cloneNode(true)); if(obj.content && obj.content.toLowerCase().includes('filtered running processes')) addFeed(el.procFeed, msg.cloneNode(true)); if(obj.attachments && obj.attachments.length){ obj.attachments.forEach(a=> addShot(a.url)); } }; }
-    connectWS(); refreshTags(); renderTags();
-
-    async function post(path){ const r = await fetch(withTag(path),{method:'POST'}); const data = await r.json().catch(()=>({})); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
-    async function startLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); setTab('live'); updateLiveGate(); return; } const monitor=(el.liveMonitor?.value||'1'); setLiveStatus('Requesting stream...', 'pending'); try{ await post('/cmd/live/start?monitor='+encodeURIComponent(monitor)); toast('Live request sent (Discord relay)'); setLiveStatus('Waiting for frames...', 'pending'); } catch(e){ setLiveStatus('Start failed', 'error'); toast(e.message);} }
-    async function stopLiveStream(){ if(!hasSelectedTag){ toast('Select a bot first'); return; } try{ await post('/cmd/live/stop'); toast('Stop request sent'); setLiveStatus('Stopping...', 'pending'); } catch(e){ toast(e.message);} }
-    async function doShot(){ try{ await post('/cmd/ss'); toast('Screenshot requested'); } catch(e){ toast(e.message);} }
-    async function doProcs(){ try{ await post('/cmd/ps'); toast('Process list requested'); } catch(e){ toast(e.message);} }
-    async function openLink(){ const url=document.getElementById('openUrl').value.trim(); if(!url){toast('Enter a URL'); return;} const safe=(url.startsWith('http://')||url.startsWith('https://'))?url:'http://'+url; try{ await post('/cmd/open?url='+encodeURIComponent(safe)); toast('Open link sent'); } catch(e){ toast(e.message);} }
-    async function killProc(){ const name=document.getElementById('procName').value.trim(); if(!name){toast('Enter a process name'); return;} try{ await post('/cmd/close?name='+encodeURIComponent(name)); toast('Kill command sent'); } catch(e){ toast(e.message);} }
-    async function confirmPower(){ if(!confirm('Power off the target machine?')) return; try{ await post('/cmd/poweroff'); toast('Power off sent'); } catch(e){ toast(e.message);} }
-    async function confirmPanic(){ if(!confirm('Panic mode will remove the receiver. Proceed?')) return; try{ await post('/cmd/panic'); toast('Panic sent'); } catch(e){ toast(e.message);} }
-    async function setVolume(){ const val=document.getElementById('volPercent').value.trim() || '100'; const num=parseFloat(val); if(Number.isNaN(num)){ toast('Enter a number'); return; } const pct=Math.min(100, Math.max(0, num)); try{ await post('/cmd/set_volume?pct='+encodeURIComponent(pct)); toast('Volume set to '+pct+'%'); } catch(e){ toast(e.message);} }
-    async function displayGif(){ try{ await post('/cmd/display_gif'); toast('Display gif sent'); } catch(e){ toast(e.message);} }
-    function clearLogs(){ el.logFeed.innerHTML=''; }
-
-    fetch('/files_index').then(r=>r.json()).then(j=>{ (j.files||[]).forEach(f=> addShot(f.url)); }).catch(()=>{});
+    const logBox = document.getElementById('log');
+    const wsDot = document.getElementById('wsDot');
+    const wsText = document.getElementById('wsText');
+    function addLog(text){ const div=document.createElement('div'); div.textContent=text; logBox.prepend(div); while(logBox.children.length>120){ logBox.lastChild.remove(); } }
+    async function call(path){ const res = await fetch(path,{method:'POST'}); const data = await res.json().catch(()=>({})); if(!res.ok){ throw new Error(data.error||'Request failed'); } return data; }
+    document.getElementById('startBtn').onclick = ()=> call('/cmd/gif/start').then(()=> addLog('Start requested')).catch(e=> addLog('Error: '+e.message));
+    document.getElementById('stopBtn').onclick = ()=> call('/cmd/gif/stop').then(()=> addLog('Stop requested')).catch(e=> addLog('Error: '+e.message));
+    function connect(){ const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws'); ws.onopen=()=>{ wsDot.className='dot ok'; wsText.textContent='Connected'; }; ws.onclose=()=>{ wsDot.className='dot'; wsText.textContent='Reconnecting...'; setTimeout(connect, 1200); }; ws.onmessage = ev => { try{ const obj=JSON.parse(ev.data); addLog(`${obj.ts || ''} ${obj.author||'bot'}: ${obj.content||''}`);}catch(_e){ addLog(ev.data);} }; }
+    connect();
   </script>
 </body>
 </html>
-""".replace("{COMMAND_CHANNEL_ID}", str(COMMAND_CHANNEL_ID)).replace("{BOT_TAG}", BOT_TAG)
- 
+"""
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return HTMLResponse(PANEL_HTML)
+
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     try:
         await hub.connect(ws)
-        await ws.send_text(json.dumps({"type":"text","author":"Panel","content":"Connected to live stream.","attachments":[], "ts": ""}))
+        await ws.send_text(json.dumps({"author": "Panel", "content": "Connected to controller.", "ts": ""}))
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
@@ -593,26 +204,15 @@ async def ws_endpoint(ws: WebSocket):
     except Exception:
         await hub.disconnect(ws)
 
+
 # ---------- HTTP endpoints to send Discord commands ----------
 async def _send_cmd(msg: str):
     await _wait_controller_ready()
     ch = await _get_channel(COMMAND_CHANNEL_ID)
     await ch.send(msg)
 
-async def _send_cmd_with_file(msg: str, file_path: Path):
-    """
-    Send a command message and attach a file if provided.
-    """
-    await _wait_controller_ready()
-    ch = await _get_channel(COMMAND_CHANNEL_ID)
-    async with ch.typing():
-        with open(file_path, "rb") as f:
-            await ch.send(msg, file=discord.File(f, filename=file_path.name))
 
-async def _send_cmd_with_files(msg: str, file_paths: List[Path]):
-    """
-    Send a command message with multiple file attachments.
-    """
+async def _send_cmd_with_files(msg: str, file_paths: list[Path]):
     await _wait_controller_ready()
     ch = await _get_channel(COMMAND_CHANNEL_ID)
     files = []
@@ -622,8 +222,7 @@ async def _send_cmd_with_files(msg: str, file_paths: List[Path]):
             handle = open(path, "rb")
             handles.append(handle)
             files.append(discord.File(handle, filename=path.name))
-        async with ch.typing():
-            await ch.send(msg, files=files)
+        await ch.send(msg, files=files)
     finally:
         for h in handles:
             try:
@@ -631,85 +230,39 @@ async def _send_cmd_with_files(msg: str, file_paths: List[Path]):
             except Exception:
                 pass
 
-@app.post("/cmd/ss")
-async def cmd_ss(tag: str = Query(None)):
-    await _send_cmd(f"{_resolve_tag(tag)} REQUEST_SCREENSHOT")
-    return JSONResponse({"ok": True})
 
-@app.post("/cmd/ps")
-async def cmd_ps(tag: str = Query(None)):
-    await _send_cmd(f"{_resolve_tag(tag)} LIST_PROCESSES")
-    return JSONResponse({"ok": True})
-
-@app.post("/cmd/open")
-async def cmd_open(url: str = Query(..., min_length=1), tag: str = Query(None)):
-    if not (url.startswith("http://") or url.startswith("https://")):
-        url = "http://" + url
-    await _send_cmd(f"{_resolve_tag(tag)} OPEN_LINK {url}")
-    return JSONResponse({"ok": True, "url": url})
-
-@app.post("/cmd/close")
-async def cmd_close(name: str = Query(..., min_length=1), tag: str = Query(None)):
-    await _send_cmd(f"{_resolve_tag(tag)} KILL_PROCESS {name}")
-    return JSONResponse({"ok": True, "name": name})
-
-@app.post("/cmd/poweroff")
-async def cmd_poweroff(tag: str = Query(None)):
-    await _send_cmd(f"{_resolve_tag(tag)} POWER_OFF")
-    return JSONResponse({"ok": True})
-
-@app.post("/cmd/panic")
-async def cmd_panic(tag: str = Query(None)):
-    await _send_cmd(f"{_resolve_tag(tag)} PANIC")
-    return JSONResponse({"ok": True})
-
-@app.post("/cmd/set_volume")
-async def cmd_set_volume(pct: float = Query(100.0), tag: str = Query(None)):
-    try:
-        pct_val = max(0.0, min(100.0, float(pct)))
-    except Exception:
-        return JSONResponse({"ok": False, "error": "Invalid percent"}, status_code=400)
-    await _send_cmd(f"{_resolve_tag(tag)} SET_VOLUME {pct_val}")
-    return JSONResponse({"ok": True, "pct": pct_val})
-
-@app.post("/cmd/live/start")
-async def cmd_live_start(
-    monitor: int = Query(1, ge=1),
-    tag: str = Query(None),
-):
-    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_START {monitor}")
-    return JSONResponse({"ok": True, "monitor": monitor, "mode": "discord"})
-
-@app.post("/cmd/live/stop")
-async def cmd_live_stop(tag: str = Query(None)):
-    await _send_cmd(f"{_resolve_tag(tag)} LIVE_STREAM_HTTP_STOP")
-    return JSONResponse({"ok": True})
-
-@app.post("/cmd/display_gif")
-async def cmd_display_gif(tag: str = Query(None)):
-    gif_path = ROOT_DIR / "display.gif"
-    sound_path = ROOT_DIR / "sound.mp3"
+def _require_assets() -> list[str]:
     missing = []
-    if not gif_path.is_file():
-        missing.append("display.gif")
-    if not sound_path.is_file():
+    if not (ROOT_DIR / "suprise.png").is_file():
+        missing.append("suprise.png")
+    if not (ROOT_DIR / "sound.mp3").is_file():
         missing.append("sound.mp3")
+    return missing
+
+
+@app.post("/cmd/gif/start")
+async def cmd_gif_start():
+    missing = _require_assets()
     if missing:
         return JSONResponse({"ok": False, "error": f"Missing file(s): {', '.join(missing)} next to main.py"}, status_code=404)
     try:
-        await _send_cmd_with_files(f"{_resolve_tag(tag)} DISPLAY_GIF", [gif_path, sound_path])
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        await _send_cmd_with_files(
+            f"{BOT_TAG} DISPLAY_GIF_START",
+            [ROOT_DIR / "suprise.png", ROOT_DIR / "sound.mp3"],
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     return JSONResponse({"ok": True})
 
-@app.get("/tags")
-async def list_tags():
-    return {"active": ACTIVE_BOT_TAG, "tags": sorted(KNOWN_TAGS)}
 
-@app.post("/tags/select")
-async def select_tag(tag: str = Query(..., min_length=1)):
-    active = _set_active_tag(tag)
-    return {"ok": True, "active": active, "tags": sorted(KNOWN_TAGS)}
+@app.post("/cmd/gif/stop")
+async def cmd_gif_stop():
+    try:
+        await _send_cmd(f"{BOT_TAG} DISPLAY_GIF_STOP")
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True})
+
 
 @app.get("/health")
 async def health():
@@ -718,6 +271,7 @@ async def health():
         "controller_ready": _controller_ready.is_set(),
         "controller_error": _controller_error,
     }
+
 
 # ---------- Run Discord bot in the same process ----------
 @app.on_event("startup")
@@ -730,6 +284,7 @@ async def _startup():
             _controller_error = str(exc)
             _controller_ready.set()
     asyncio.create_task(_run_bot())
+
 
 @app.on_event("shutdown")
 async def _shutdown():
