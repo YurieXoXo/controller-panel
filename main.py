@@ -422,7 +422,9 @@ async def ui_open(request: Request):
     except Exception:
         url = request.query_params.get("url")
     if url:
-        await _send_cmd(_cmd_with_selection("OPEN_LINK", url))
+        msg = _cmd_with_selection("OPEN_LINK", url)
+        print("Sending:", msg)
+        await _send_cmd(msg)
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/close")
@@ -434,7 +436,9 @@ async def ui_close(request: Request):
     except Exception:
         proc = request.query_params.get("proc")
     if proc:
-        await _send_cmd(_cmd_with_selection("KILL_PROCESS", proc))
+        msg = _cmd_with_selection("KILL_PROCESS", proc)
+        print("Sending:", msg)
+        await _send_cmd(msg)
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/volume")
@@ -446,7 +450,9 @@ async def ui_volume(request: Request):
     except Exception:
         level = request.query_params.get("level")
     if level:
-        await _send_cmd(_cmd_with_selection("SET_VOLUME", level))
+        msg = _cmd_with_selection("SET_VOLUME", level)
+        print("Sending:", msg)
+        await _send_cmd(msg)
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/select/{tag}")
