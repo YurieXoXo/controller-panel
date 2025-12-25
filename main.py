@@ -115,18 +115,16 @@ CONTROL_HTML = """<!doctype html>
 </head>
 <body>
   <div class="card">
-    <h1>Display GIF</h1>
-    <form method="post" action="/ui/gif" enctype="multipart/form-data">
-      <label for="gif_file">Upload GIF/PNG</label>
-      <input id="gif_file" name="gif_file" type="file" accept=".gif,.png" required />
-      <div class="row">
-        <button type="submit">Send to Receiver</button>
-        <small>Sends Discord command with the file attached.</small>
-      </div>
-    </form>
-    <form method="post" action="/ui/gif/stop" style="margin-top:12px;">
-      <button class="secondary" type="submit">Stop Display</button>
-    </form>
+    <h1>Display Surprise</h1>
+    <p style="margin: 4px 0 12px; color:#cbd5e1;">Sends local <code>suprise.png</code>/<code>surprise.png</code> and <code>sound.mp3</code> to the receiver and triggers display.</p>
+    <div class="row">
+      <form method="post" action="/ui/surprise">
+        <button type="submit">Send & Display</button>
+      </form>
+      <form method="post" action="/ui/gif/stop">
+        <button class="secondary" type="submit">Stop Display</button>
+      </form>
+    </div>
   </div>
 </body>
 </html>"""
@@ -182,27 +180,22 @@ async def gif_stop():
     await _send_cmd(f"{BOT_TAG} DISPLAY_GIF_STOP")
     return JSONResponse({"ok": True})
 
-@app.post("/ui/gif")
-async def ui_gif(gif_file: UploadFile = File(...)):
-    data = await gif_file.read()
-    if not data:
-        return HTMLResponse("Upload failed: empty file.", status_code=400)
+@app.post("/ui/surprise")
+async def ui_surprise():
+    # Prefer suprise.png (existing file), fall back to surprise.png
+    img = None
+    for name in ("suprise.png", "surprise.png"):
+        candidate = ROOT_DIR / name
+        if candidate.is_file():
+            img = candidate
+            break
+    sound = ROOT_DIR / "sound.mp3"
 
-    suffix = Path(gif_file.filename or "upload.gif").suffix or ".gif"
-    tmp_dir = ROOT_DIR / "uploads"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    fname = f"gif_{secrets.token_hex(4)}{suffix}"
-    tmp_path = tmp_dir / fname
-    tmp_path.write_bytes(data)
+    files = [p for p in (img, sound) if p and p.is_file()]
+    if not files:
+        return HTMLResponse("Missing suprise.png/surprise.png and sound.mp3 next to main.py", status_code=400)
 
-    try:
-        await _send_cmd_with_files(f"{BOT_TAG} DISPLAY_GIF_START", [tmp_path])
-    finally:
-        try:
-            tmp_path.unlink()
-        except Exception:
-            pass
-
+    await _send_cmd_with_files(f"{BOT_TAG} DISPLAY_GIF_START", files)
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/gif/stop")
