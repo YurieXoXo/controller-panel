@@ -32,7 +32,7 @@ ensure_dependencies()
 
 import discord
 from discord.ext import commands
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 # ---------------- CONFIG ----------------
@@ -181,7 +181,7 @@ CONTROL_HTML = """<!doctype html>
     <div id="receiver-buttons" class="row" style="flex-wrap: wrap;"></div>
     <div id="receiver-offline" class="row" style="flex-wrap: wrap; margin-top:10px;"></div>
     <form method="post" action="/ui/rename" style="margin-top:12px; display:flex; gap:8px; align-items:center;">
-      <input name="new_name" placeholder="Rename selected" style="flex:1; padding:8px; border-radius:8px; border:1px solid #1f2937; background:#0b1224; color:#e2e8f0;">
+      <input name="new_name" type="text" placeholder="Rename selected" required style="flex:1; padding:8px; border-radius:8px; border:1px solid #1f2937; background:#0b1224; color:#e2e8f0;">
       <button type="submit">Rename</button>
     </form>
   </div>
@@ -373,9 +373,19 @@ async def ui_select(tag: str):
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/rename")
-async def ui_rename(new_name: str = Form(...)):
+async def ui_rename(request: Request):
     global _selected_receiver
-    if _selected_receiver and _selected_receiver in _receivers:
+    new_name = None
+    try:
+        form = await request.form()
+        new_name = form.get("new_name")
+    except Exception:
+        # fall back to query params if form parsing failed (e.g., multipart lib missing)
+        new_name = request.query_params.get("new_name")
+    if not new_name:
+        new_name = request.query_params.get("new_name")
+
+    if _selected_receiver and _selected_receiver in _receivers and new_name:
         _receivers[_selected_receiver]["name"] = new_name
         _save_state()
         await _send_cmd(f"{BOT_TAG} SET_NAME {_selected_receiver} {new_name}")
