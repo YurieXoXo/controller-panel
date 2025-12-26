@@ -37,9 +37,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 # ---------------- CONFIG ----------------
 CONTROLLER_TOKEN = os.getenv("CONTROLLER_TOKEN", "")
-COMMAND_CHANNEL_ID = int(os.getenv("COMMAND_CHANNEL_ID", "0"))
+COMMAND_CHANNEL_ID = int(os.getenv("COMMAND_CHANNEL_ID", "1360236257212633260"))
 TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "0"))
-BOT_TAG = "[BOT1]"
+BOT_TAG = ""  # unused for now; kept for compatibility if needed
 
 assert CONTROLLER_TOKEN
 assert COMMAND_CHANNEL_ID
@@ -98,16 +98,21 @@ async def on_message(message: discord.Message):
                 break
     # Track receiver announcements
     if message.channel.id == COMMAND_CHANNEL_ID:
-        if message.content.startswith(f"{BOT_TAG} ONLINE") or message.content.startswith(f"{BOT_TAG} PING"):
-            parts = message.content.split(maxsplit=3)
-            if len(parts) >= 4:
-                receiver_id = parts[2].strip()
-                tag = parts[3].strip()
-                now = time.time()
-                entry = _receivers.get(receiver_id, {"name": tag, "tag": tag, "last_seen": now})
-                entry["tag"] = tag
-                entry["last_seen"] = now
-                _receivers[receiver_id] = entry
+        content = (message.content or "").strip()
+        if not content:
+            return
+        tokens = content.split()
+        # Drop optional BOT_TAG for backward compatibility
+        if BOT_TAG and tokens and tokens[0] == BOT_TAG:
+            tokens = tokens[1:]
+        if tokens and tokens[0] in ("ONLINE", "PING") and len(tokens) >= 3:
+            receiver_id = tokens[1].strip()
+            tag = tokens[2].strip()
+            now = time.time()
+            entry = _receivers.get(receiver_id, {"name": tag, "tag": tag, "last_seen": now})
+            entry["tag"] = tag
+            entry["last_seen"] = now
+            _receivers[receiver_id] = entry
                 if _selected_receiver is None:
                     _selected_receiver = receiver_id
                 _save_state()
@@ -346,11 +351,8 @@ async def _send_cmd_with_files(msg: str, file_paths: list[Path]):
     await ch.send(content=msg, files=files)
 
 def _cmd_with_selection(cmd: str, *args: str) -> str:
-    parts = [BOT_TAG, cmd]
-    if _selected_receiver and _selected_receiver in _receivers:
-        tag = _receivers[_selected_receiver].get("name") or _receivers[_selected_receiver].get("tag")
-        parts.extend([tag, _selected_receiver])
-    parts.extend(args)
+    # Broadcast to all receivers: no tag/selection
+    parts = [cmd, *args]
     return " ".join(parts)
 
 @app.post("/cmd/gif/start")
