@@ -113,9 +113,9 @@ async def on_message(message: discord.Message):
             entry["tag"] = tag
             entry["last_seen"] = now
             _receivers[receiver_id] = entry
-                if _selected_receiver is None:
-                    _selected_receiver = receiver_id
-                _save_state()
+            if _selected_receiver is None:
+                _selected_receiver = receiver_id
+            _save_state()
 # ---------------- WEBSOCKET HUB ----------------
 class Hub:
     def __init__(self):
