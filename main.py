@@ -333,22 +333,45 @@ async def audio_ws(ws: WebSocket):
 # ---------------- COMMAND ENDPOINTS ----------------
 async def _send_cmd(msg: str):
     await _controller_ready.wait()
-    ch = await _get_channel(COMMAND_CHANNEL_ID)
-    await ch.send(msg)
+    if _controller_error:
+        print("Controller bot not ready:", _controller_error)
+        return
+    try:
+        ch = await _get_channel(COMMAND_CHANNEL_ID)
+        print(f"Sending command to channel {COMMAND_CHANNEL_ID}:", msg)
+        await ch.send(msg)
+    except Exception as e:
+        print("Send command failed:", e)
 
 async def _send_cmd_with_files(msg: str, file_paths: list[Path]):
     await _controller_ready.wait()
-    ch = await _get_channel(COMMAND_CHANNEL_ID)
-    files = []
-    for p in file_paths:
-        try:
-            files.append(discord.File(fp=str(p), filename=p.name))
-        except Exception:
-            continue
-    if not files:
-        await ch.send(f"{msg} (no files attached)")
+    if _controller_error:
+        print("Controller bot not ready:", _controller_error)
         return
-    await ch.send(content=msg, files=files)
+    try:
+        ch = await _get_channel(COMMAND_CHANNEL_ID)
+        print(f"Sending command with files to channel {COMMAND_CHANNEL_ID}:", msg, [p.name for p in file_paths])
+        files = []
+        for p in file_paths:
+            try:
+                files.append(discord.File(fp=str(p), filename=p.name))
+            except Exception as e:
+                print("Skipping file attach failed:", p, e)
+                continue
+        if not files:
+            await ch.send(f"{msg} (no files attached)")
+            return
+        await ch.send(content=msg, files=files)
+    except Exception as e:
+        print("Send command with files failed:", e)
+
+async def _wait_controller_ready(timeout: float = 5.0) -> bool:
+    try:
+        await asyncio.wait_for(_controller_ready.wait(), timeout=timeout)
+        return True
+    except asyncio.TimeoutError:
+        print("Discord bot not ready after wait; controller may not be connected.")
+        return False
 
 def _cmd_with_selection(cmd: str, *args: str) -> str:
     # Broadcast to all receivers: no tag/selection
@@ -357,11 +380,15 @@ def _cmd_with_selection(cmd: str, *args: str) -> str:
 
 @app.post("/cmd/gif/start")
 async def gif_start():
+    if not await _wait_controller_ready():
+        return JSONResponse({"ok": False, "error": "bot not ready"}, status_code=503)
     await _send_cmd(_cmd_with_selection("DISPLAY_GIF_START"))
     return JSONResponse({"ok": True})
 
 @app.post("/cmd/gif/stop")
 async def gif_stop():
+    if not await _wait_controller_ready():
+        return JSONResponse({"ok": False, "error": "bot not ready"}, status_code=503)
     await _send_cmd(_cmd_with_selection("DISPLAY_GIF_STOP"))
     return JSONResponse({"ok": True})
 
@@ -397,21 +424,29 @@ async def ui_surprise():
     if not files:
         return HTMLResponse("Missing suprise.png/surprise.png and sound.mp3 next to main.py", status_code=400)
 
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
     await _send_cmd_with_files(_cmd_with_selection("DISPLAY_GIF_START"), files)
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/gif/stop")
 async def ui_gif_stop():
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
     await gif_stop()
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/live/start")
 async def ui_live_start():
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
     await _send_cmd(_cmd_with_selection("LIVE_START"))
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/live/stop")
 async def ui_live_stop():
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
     await _send_cmd(_cmd_with_selection("LIVE_STOP"))
     return RedirectResponse(url="/", status_code=303)
 
@@ -426,6 +461,8 @@ async def ui_open(request: Request):
     if url:
         msg = _cmd_with_selection("OPEN_LINK", url)
         print("Sending:", msg)
+        if not await _wait_controller_ready():
+            return HTMLResponse("Discord bot not ready", status_code=503)
         await _send_cmd(msg)
     return RedirectResponse(url="/", status_code=303)
 
@@ -440,6 +477,8 @@ async def ui_close(request: Request):
     if proc:
         msg = _cmd_with_selection("KILL_PROCESS", proc)
         print("Sending:", msg)
+        if not await _wait_controller_ready():
+            return HTMLResponse("Discord bot not ready", status_code=503)
         await _send_cmd(msg)
     return RedirectResponse(url="/", status_code=303)
 
@@ -454,6 +493,8 @@ async def ui_volume(request: Request):
     if level:
         msg = _cmd_with_selection("SET_VOLUME", level)
         print("Sending:", msg)
+        if not await _wait_controller_ready():
+            return HTMLResponse("Discord bot not ready", status_code=503)
         await _send_cmd(msg)
     return RedirectResponse(url="/", status_code=303)
 
@@ -474,4 +515,7 @@ async def startup():
             await bot.start(CONTROLLER_TOKEN)
         except Exception as e:
             print("Bot failed:", e)
+            global _controller_error
+            _controller_error = str(e)
+            _controller_ready.set()
     asyncio.create_task(run_bot())
