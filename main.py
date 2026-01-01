@@ -437,6 +437,13 @@ def _cmd_with_selection(cmd: str, *args: str) -> str:
         return f"TARGET {_selected_receiver} {base}"
     return f"TARGET NONE {base}"
 
+def _cmd_for_receiver(rid: Optional[str], cmd: str, *args: str) -> str:
+    parts = [cmd, *args]
+    base = " ".join(parts)
+    if rid:
+        return f"TARGET {rid} {base}"
+    return f"TARGET NONE {base}"
+
 @app.post("/cmd/gif/start")
 async def gif_start():
     if not await _wait_controller_ready():
@@ -575,9 +582,13 @@ async def ui_rename(rid: str, request: Request):
         cleaned = alias.strip()
         if cleaned:
             _receivers[rid]["alias"] = cleaned
+            _receivers[rid]["tag"] = cleaned
+            _save_state()
+            if await _wait_controller_ready():
+                await _send_cmd(_cmd_for_receiver(rid, "SET_NAME", cleaned))
         else:
             _receivers[rid].pop("alias", None)
-        _save_state()
+            _save_state()
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/panic")
