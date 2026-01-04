@@ -242,6 +242,7 @@ CONTROL_HTML = """<!doctype html>
     .receiver-item { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: #0c0817; }
     .receiver-item.selected { border-color: rgba(155,92,255,0.7); box-shadow: 0 0 0 1px rgba(155,92,255,0.4); }
     .receiver-info { display: flex; flex-direction: column; gap: 6px; }
+    .receiver-title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .receiver-name { font-weight: 700; letter-spacing: 0.2px; }
     .receiver-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted); }
     .status-pill { padding: 4px 8px; border-radius: 999px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; border: 1px solid var(--border); background: #120a22; }
@@ -254,6 +255,10 @@ CONTROL_HTML = """<!doctype html>
     .receiver-id { opacity: 0.8; }
     .receiver-summary { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
     .receiver-empty { padding: 12px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); }
+    .rename-section { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: #0c0817; }
+    .rename-section h2 { margin: 0 0 10px; font-size: 14px; letter-spacing: 0.3px; }
+    .rename-grid { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(200px, 2fr) auto; gap: 10px; align-items: center; }
+    .rename-select { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: #0c0817; color: var(--text); }
     .rename-input { width: 180px; min-width: 140px; margin-bottom: 0; }
     .panic-btn { position: fixed; right: 24px; bottom: 24px; z-index: 999; background: linear-gradient(135deg, #f97316, var(--danger)); color: #0b0419; box-shadow: 0 12px 24px rgba(239,68,68,0.35); }
     .panic-btn:active { transform: translateY(1px); }
@@ -290,6 +295,16 @@ CONTROL_HTML = """<!doctype html>
         <h1>Select Target</h1>
         <div id="receiver-summary" class="receiver-summary"></div>
         <div id="receiver-list" class="receiver-list"></div>
+        <div class="rename-section">
+          <h2>Rename Display</h2>
+          <form id="rename-form" method="post" action="/ui/rename/">
+            <div class="rename-grid">
+              <select id="rename-target" name="rid" class="rename-select"></select>
+              <input id="rename-alias" class="rename-input" name="alias" type="text" placeholder="New display name">
+              <button class="secondary" type="submit">Save Name</button>
+            </div>
+          </form>
+        </div>
       </div>
       <div class="tab-pane" data-tab="openclose">
         <h1>Open & Close :3</h1>
@@ -409,6 +424,37 @@ CONTROL_HTML = """<!doctype html>
       if (pinInput) pinInput.focus();
     });
     let selectedReceiver = null;
+    let lastReceiverList = [];
+    const renameForm = document.getElementById('rename-form');
+    const renameSelect = document.getElementById('rename-target');
+    const renameInput = document.getElementById('rename-alias');
+
+    function updateRenameSection(rec) {
+      if (!renameForm || !renameSelect || !renameInput) return;
+      if (!rec) {
+        renameForm.action = '/ui/rename/';
+        renameInput.placeholder = 'No receiver selected';
+        if (document.activeElement !== renameInput) {
+          renameInput.value = '';
+        }
+        renameForm.querySelector('button').disabled = true;
+        return;
+      }
+      renameForm.action = '/ui/rename/' + encodeURIComponent(rec.id);
+      renameForm.querySelector('button').disabled = false;
+      if (document.activeElement !== renameInput) {
+        renameInput.value = rec.alias || '';
+        renameInput.placeholder = rec.name || rec.tag || rec.id;
+      }
+    }
+
+    if (renameSelect) {
+      renameSelect.addEventListener('change', () => {
+        const rid = renameSelect.value;
+        const rec = lastReceiverList.find(item => item.id === rid);
+        updateRenameSection(rec);
+      });
+    }
     async function refreshReceivers() {
       try {
         const res = await fetch('/api/receivers');
@@ -421,17 +467,17 @@ CONTROL_HTML = """<!doctype html>
         wrap.innerHTML = '';
         const online = data.online || [];
         const offline = data.offline || [];
+        lastReceiverList = online.concat(offline);
         if (summary) {
           summary.textContent = `${online.length} online | ${offline.length} offline`;
         }
-        const all = online.concat(offline);
-        if (!all.length) {
+        if (!lastReceiverList.length) {
           const empty = document.createElement('div');
           empty.className = 'receiver-empty';
           empty.textContent = 'No receivers yet. Open a receiver to appear here.';
           wrap.appendChild(empty);
         }
-        all.forEach(rec => {
+        lastReceiverList.forEach(rec => {
           const item = document.createElement('div');
           item.className = 'receiver-item';
           if (data.selected === rec.id) {
@@ -441,25 +487,27 @@ CONTROL_HTML = """<!doctype html>
           const info = document.createElement('div');
           info.className = 'receiver-info';
 
-          const name = document.createElement('div');
-          name.className = 'receiver-name';
-          name.textContent = rec.name || rec.tag || rec.id;
-
-          const meta = document.createElement('div');
-          meta.className = 'receiver-meta';
-
           const status = document.createElement('span');
           const statusKey = rec.status_key || (rec.online ? 'online' : 'offline');
           status.className = 'status-pill status-' + statusKey;
           status.textContent = rec.status || (rec.online ? 'Online' : 'Offline');
 
+          const title = document.createElement('div');
+          title.className = 'receiver-title';
+          const name = document.createElement('div');
+          name.className = 'receiver-name';
+          name.textContent = rec.name || rec.tag || rec.id;
+          title.appendChild(name);
+          title.appendChild(status);
+
+          const meta = document.createElement('div');
+          meta.className = 'receiver-meta';
           const idSpan = document.createElement('span');
           idSpan.className = 'receiver-id';
           idSpan.textContent = rec.tag ? ('Tag: ' + rec.tag) : ('ID: ' + rec.id);
 
-          meta.appendChild(status);
           meta.appendChild(idSpan);
-          info.appendChild(name);
+          info.appendChild(title);
           info.appendChild(meta);
 
           const actions = document.createElement('div');
@@ -481,30 +529,36 @@ CONTROL_HTML = """<!doctype html>
           }
           selectForm.appendChild(btn);
 
-          const renameForm = document.createElement('form');
-          renameForm.method = 'post';
-          renameForm.action = '/ui/rename/' + encodeURIComponent(rec.id);
-          wireForm(renameForm);
-          const input = document.createElement('input');
-          input.type = 'text';
-          input.name = 'alias';
-          input.placeholder = 'Rename';
-          input.value = rec.alias || '';
-          input.className = 'rename-input';
-          const renameBtn = document.createElement('button');
-          renameBtn.type = 'submit';
-          renameBtn.textContent = 'Rename';
-          renameBtn.className = 'secondary';
-          renameForm.appendChild(input);
-          renameForm.appendChild(renameBtn);
-
           actions.appendChild(selectForm);
-          actions.appendChild(renameForm);
 
           item.appendChild(info);
           item.appendChild(actions);
           wrap.appendChild(item);
         });
+        if (renameSelect) {
+          const current = renameSelect.value;
+          renameSelect.innerHTML = '';
+          if (!lastReceiverList.length) {
+            const option = document.createElement('option');
+            option.textContent = 'No receivers';
+            option.value = '';
+            renameSelect.appendChild(option);
+            updateRenameSection(null);
+          } else {
+            lastReceiverList.forEach(rec => {
+              const opt = document.createElement('option');
+              opt.value = rec.id;
+              opt.textContent = `${rec.name || rec.tag || rec.id} - ${rec.status || (rec.online ? 'Online' : 'Offline')}`;
+              if (rec.id === current || (!current && rec.id === selectedReceiver)) {
+                opt.selected = true;
+              }
+              renameSelect.appendChild(opt);
+            });
+            const targetId = renameSelect.value || selectedReceiver;
+            const targetRec = lastReceiverList.find(item => item.id === targetId);
+            updateRenameSection(targetRec);
+          }
+        }
         const panicBtn = document.getElementById('panic-btn');
         if (panicBtn) {
           panicBtn.disabled = !selectedReceiver;
@@ -863,10 +917,7 @@ async def ui_rename(rid: str, request: Request):
         cleaned = alias.strip()
         if cleaned:
             _receivers[rid]["alias"] = cleaned
-            _receivers[rid]["tag"] = cleaned
             _save_state()
-            if await _wait_controller_ready():
-                await _send_cmd(_cmd_for_receiver(rid, "SET_NAME", cleaned))
         else:
             _receivers[rid].pop("alias", None)
             _save_state()
