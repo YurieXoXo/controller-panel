@@ -592,8 +592,12 @@ CONTROL_HTML = """<!doctype html>
       const method = (form.method || 'post').toUpperCase();
       const data = new FormData(form);
       try {
-        const res = await fetch(form.action, { method, body: data });
-        if (!res.ok) {
+        const res = await fetch(form.action, {
+          method,
+          body: data,
+          headers: { 'X-Requested-With': 'fetch' },
+        });
+        if (!(res.status >= 200 && res.status < 400)) {
           alert('Request failed.');
           return false;
         }
@@ -921,6 +925,8 @@ async def ui_rename(rid: str, request: Request):
         else:
             _receivers[rid].pop("alias", None)
             _save_state()
+    if request.headers.get("X-Requested-With") == "fetch":
+        return JSONResponse({"ok": True, "id": rid, "alias": alias or ""})
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/panic")
