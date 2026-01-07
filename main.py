@@ -281,7 +281,7 @@ CONTROL_HTML = """<!doctype html>
       </div>
       <div class="tab-pane active" data-tab="surprise">
         <h1>Display Surprise</h1>
-        <p style="margin: 4px 0 12px; color:var(--muted);">Sends local <code>suprise.png</code>/<code>surprise.png</code> and <code>sound.mp3</code> to the receiver and triggers display.</p>
+        <p style="margin: 4px 0 12px; color:var(--muted);">Sends local <code>M.gif</code> and <code>sound.mp3</code> to the receiver and triggers display.</p>
         <div class="row">
           <form method="post" action="/ui/surprise">
             <button type="submit">Send & Display</button>
@@ -797,9 +797,9 @@ async def api_receivers():
 
 @app.post("/ui/surprise")
 async def ui_surprise():
-    # Prefer suprise.png (existing file), fall back to surprise.png
+    # Prefer M.gif for display
     img = None
-    for name in ("suprise.png", "surprise.png"):
+    for name in ("M.gif",):
         candidate = ROOT_DIR / name
         if candidate.is_file():
             img = candidate
@@ -808,7 +808,7 @@ async def ui_surprise():
 
     files = [p for p in (img, sound) if p and p.is_file()]
     if not files:
-        return HTMLResponse("Missing suprise.png/surprise.png and sound.mp3 next to main.py", status_code=400)
+        return HTMLResponse("Missing M.gif and sound.mp3 next to main.py", status_code=400)
 
     if not await _wait_controller_ready():
         return HTMLResponse("Discord bot not ready", status_code=503)
