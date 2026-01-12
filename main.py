@@ -761,6 +761,18 @@ async def screen_ws(ws: WebSocket):
         async with _screen_viewers_lock:
             _screen_viewers.discard(ws)
 
+@app.post("/screen/upload")
+async def screen_upload(request: Request):
+    data = await request.body()
+    if not data:
+        return JSONResponse({"ok": False, "error": "empty body"}, status_code=400)
+    try:
+        await _screen_broadcast(data)
+    except Exception as e:
+        print("Screen upload broadcast failed:", e)
+        return JSONResponse({"ok": False, "error": "broadcast failed"}, status_code=500)
+    return JSONResponse({"ok": True})
+
 
 # ---------------- COMMAND ENDPOINTS ----------------
 async def _send_cmd(msg: str):
