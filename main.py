@@ -97,8 +97,6 @@ def _receiver_status(info: dict, now: Optional[float] = None) -> tuple[str, str,
     mode = (info.get("mode") or "").lower()
     if mode in ("gif", "gif_display"):
         return ("Gif Display", "gif", True)
-    if mode in ("live", "live_display"):
-        return ("Live Display", "live", True)
     return ("Online", "online", True)
 
 def _set_receiver_mode(rid: Optional[str], mode: str):
@@ -208,10 +206,6 @@ class Hub:
 
 hub = Hub()
 
-# Live screen WebSocket hub (receiver sends frames, viewers consume)
-_screen_viewers: set[WebSocket] = set()
-_screen_viewers_lock = asyncio.Lock()
-
 # ---------------- FASTAPI ----------------
 app = FastAPI(title="Controller")
 
@@ -253,7 +247,6 @@ CONTROL_HTML = """<!doctype html>
     .status-online { border-color: rgba(34,197,94,0.5); color: #86efac; background: rgba(34,197,94,0.12); }
     .status-offline { border-color: rgba(239,68,68,0.45); color: #fecaca; background: rgba(239,68,68,0.12); }
     .status-gif { border-color: rgba(251,146,60,0.45); color: #fdba74; background: rgba(251,146,60,0.12); }
-    .status-live { border-color: rgba(56,189,248,0.45); color: #bae6fd; background: rgba(56,189,248,0.12); }
     .receiver-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .receiver-actions form { margin: 0; }
     .receiver-id { opacity: 0.8; }
@@ -261,9 +254,8 @@ CONTROL_HTML = """<!doctype html>
     .receiver-empty { padding: 12px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); }
     .rename-section { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: #0c0817; }
     .rename-section h2 { margin: 0 0 10px; font-size: 14px; letter-spacing: 0.3px; }
-    .rename-grid { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(200px, 2fr) auto; gap: 10px; align-items: center; }
+    .rename-grid { display: grid; grid-template-columns: minmax(200px, 1fr) auto; gap: 10px; align-items: center; }
     .rename-select { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: #0c0817; color: var(--text); }
-    .rename-input { width: 180px; min-width: 140px; margin-bottom: 0; }
     .panic-btn { position: fixed; right: 24px; bottom: 24px; z-index: 999; background: linear-gradient(135deg, #f97316, var(--danger)); color: #0b0419; box-shadow: 0 12px 24px rgba(239,68,68,0.35); }
     .panic-btn:active { transform: translateY(1px); }
     .locked .app { pointer-events: none; filter: blur(1px); }
@@ -293,6 +285,9 @@ CONTROL_HTML = """<!doctype html>
           <form method="post" action="/ui/gif/stop">
             <button class="secondary" type="submit">Stop Display</button>
           </form>
+          <form method="post" action="/ui/screenshot/once">
+            <button class="secondary" type="submit">Screenshot</button>
+          </form>
         </div>
       </div>
       <div class="tab-pane" data-tab="select">
@@ -300,13 +295,14 @@ CONTROL_HTML = """<!doctype html>
         <div id="receiver-summary" class="receiver-summary"></div>
         <div id="receiver-list" class="receiver-list"></div>
         <div class="rename-section">
-          <h2>Rename Display</h2>
+          <h2>Rename</h2>
+          <p style="margin: 4px 0 12px; color:var(--muted);">Select a receiver to rename it.</p>
           <form id="rename-form" method="post" action="/ui/rename/">
             <div class="rename-grid">
               <select id="rename-target" name="rid" class="rename-select"></select>
-              <input id="rename-alias" class="rename-input" name="alias" type="text" placeholder="New display name">
-              <button class="secondary" type="submit">Save Name</button>
+              <button id="rename-trigger" class="secondary" type="button">Rename</button>
             </div>
+            <input id="rename-alias" name="alias" type="hidden">
           </form>
         </div>
       </div>
@@ -369,24 +365,6 @@ CONTROL_HTML = """<!doctype html>
         </form>
       </div>
     </div>
-    <div class="card">
-      <h1>Live Screen</h1>
-      <p style="margin: 4px 0 12px; color:var(--muted);">Live MJPEG push; no prompts on receiver.</p>
-      <div id="screen-wrap">
-        <img id="screen-img" src="" alt="Waiting for stream..." style="max-width:100%; border:1px solid var(--border); border-radius:10px; background:#0c0817;">
-      </div>
-      <div class="row" style="margin-top:10px;">
-        <form method="post" action="/ui/live/start">
-          <button type="submit">Start Live</button>
-        </form>
-        <form method="post" action="/ui/live/stop">
-          <button class="secondary" type="submit">Stop Live</button>
-        </form>
-        <form method="post" action="/ui/screenshot/once">
-          <button class="secondary" type="submit">Ss</button>
-        </form>
-      </div>
-    </div>
   </div>
   <button id="panic-btn" class="panic-btn" type="button">Panic Mode</button>
   </div>
@@ -432,28 +410,21 @@ CONTROL_HTML = """<!doctype html>
     });
     let selectedReceiver = null;
     let lastReceiverList = [];
-    let screenSocket = null;
     const renameForm = document.getElementById('rename-form');
     const renameSelect = document.getElementById('rename-target');
     const renameInput = document.getElementById('rename-alias');
+    const renameTrigger = document.getElementById('rename-trigger');
 
     function updateRenameSection(rec) {
-      if (!renameForm || !renameSelect || !renameInput) return;
+      if (!renameForm || !renameSelect || !renameInput || !renameTrigger) return;
       if (!rec) {
         renameForm.action = '/ui/rename/';
-        renameInput.placeholder = 'No receiver selected';
-        if (document.activeElement !== renameInput) {
-          renameInput.value = '';
-        }
-        renameForm.querySelector('button').disabled = true;
+        renameInput.value = '';
+        renameTrigger.disabled = true;
         return;
       }
       renameForm.action = '/ui/rename/' + encodeURIComponent(rec.id);
-      renameForm.querySelector('button').disabled = false;
-      if (document.activeElement !== renameInput) {
-        renameInput.value = rec.alias || '';
-        renameInput.placeholder = rec.name || rec.tag || rec.id;
-      }
+      renameTrigger.disabled = false;
     }
 
     if (renameSelect) {
@@ -461,6 +432,34 @@ CONTROL_HTML = """<!doctype html>
         const rid = renameSelect.value;
         const rec = lastReceiverList.find(item => item.id === rid);
         updateRenameSection(rec);
+        if (rec) {
+          promptRename(rec);
+        }
+      });
+    }
+
+    async function promptRename(rec) {
+      if (!renameForm || !renameInput || !rec) return;
+      const current = rec.name || rec.tag || rec.id;
+      const next = window.prompt(`Rename "${current}" to:`, rec.alias || rec.name || '');
+      if (next === null) return;
+      const cleaned = next.trim();
+      renameInput.value = cleaned;
+      const ok = await submitFormNoReload(renameForm);
+      if (ok) {
+        refreshReceivers();
+      }
+    }
+
+    if (renameTrigger) {
+      renameTrigger.addEventListener('click', () => {
+        const rid = renameSelect ? renameSelect.value : '';
+        const rec = lastReceiverList.find(item => item.id === rid);
+        if (!rec) {
+          alert('Select a receiver first.');
+          return;
+        }
+        promptRename(rec);
       });
     }
     async function refreshReceivers() {
@@ -527,7 +526,8 @@ CONTROL_HTML = """<!doctype html>
           wireForm(selectForm);
           const btn = document.createElement('button');
           btn.type = 'submit';
-          btn.textContent = data.selected === rec.id ? 'Selected' : 'Select';
+          const displayName = rec.name || rec.tag || rec.id;
+          btn.textContent = data.selected === rec.id ? `Selected: ${displayName}` : displayName;
           if (!rec.online) {
             btn.className = 'secondary';
           }
@@ -573,29 +573,6 @@ CONTROL_HTML = """<!doctype html>
         }
       } catch (e) { /* ignore */ }
     }
-    function stopScreenSocket() {
-      if (screenSocket) {
-        try { screenSocket.close(); } catch (e) { /* ignore */ }
-        screenSocket = null;
-      }
-    }
-
-    function connectScreenSocket() {
-      stopScreenSocket();
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(proto + '://' + location.host + '/screen?role=viewer');
-      ws.binaryType = 'arraybuffer';
-      ws.onmessage = (ev) => {
-        const blob = new Blob([ev.data], { type: 'image/jpeg' });
-        const url = URL.createObjectURL(blob);
-        const img = document.getElementById('screen-img');
-        if (img) img.src = url;
-        setTimeout(() => URL.revokeObjectURL(url), 3000);
-      };
-      ws.onclose = () => { setTimeout(connectScreenSocket, 1500); };
-      ws.onerror = () => { try { ws.close(); } catch (e) {} };
-      screenSocket = ws;
-    }
     async function refreshLogs() {
       try {
         const output = document.getElementById('log-output');
@@ -637,12 +614,6 @@ CONTROL_HTML = """<!doctype html>
         if (form.action.includes('/ui/rename') || form.action.includes('/ui/select')) {
           refreshReceivers();
         }
-        if (form.action.includes('/ui/live/start')) {
-          connectScreenSocket();
-        }
-        if (form.action.includes('/ui/live/stop')) {
-          stopScreenSocket();
-        }
       });
     }
     // tabs
@@ -657,7 +628,6 @@ CONTROL_HTML = """<!doctype html>
     activateTab('surprise');
     refreshReceivers();
     refreshLogs();
-    connectScreenSocket();
     setInterval(refreshReceivers, 5000);
     setInterval(refreshLogs, 5000);
 
@@ -711,89 +681,6 @@ async def audio_ws(ws: WebSocket):
         pass
     finally:
         await hub.remove(ws)
-
-async def _screen_broadcast(data: bytes, *, sender: Optional[WebSocket] = None):
-    dead = []
-    async with _screen_viewers_lock:
-        for ws in list(_screen_viewers):
-            if sender is not None and ws is sender:
-                continue
-            try:
-                await ws.send_bytes(data)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            _screen_viewers.discard(ws)
-
-@app.websocket("/screen")
-async def screen_ws(ws: WebSocket):
-    role = (ws.query_params.get("role") or "viewer").lower()
-    await ws.accept()
-    if role == "sender":
-        try:
-            while True:
-                data = await ws.receive_bytes()
-                await _screen_broadcast(data, sender=ws)
-        except WebSocketDisconnect:
-            pass
-        except Exception as e:
-            print("Screen sender error:", e)
-        return
-
-    async with _screen_viewers_lock:
-        _screen_viewers.add(ws)
-    try:
-        while True:
-            await ws.receive_text()
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        print("Screen viewer error:", e)
-    finally:
-        async with _screen_viewers_lock:
-            _screen_viewers.discard(ws)
-
-@app.post("/screen/upload")
-async def screen_upload(request: Request):
-    data = await request.body()
-    if not data:
-        return JSONResponse({"ok": False, "error": "empty body"}, status_code=400)
-    try:
-        await _screen_broadcast(data)
-    except Exception as e:
-        print("Screen upload broadcast failed:", e)
-        return JSONResponse({"ok": False, "error": "broadcast failed"}, status_code=500)
-    return JSONResponse({"ok": True})
-
-@app.post("/screen/stream")
-async def screen_stream(request: Request):
-    """
-    Accept multipart/x-mixed-replace stream and broadcast each frame to viewers.
-    """
-    raw = await request.body()
-    if not raw:
-        return JSONResponse({"ok": False, "error": "empty body"}, status_code=400)
-    boundary = b"--frame"
-    buf = raw
-    while True:
-        start = buf.find(boundary)
-        if start == -1:
-            break
-        header_end = buf.find(b"\r\n\r\n", start)
-        if header_end == -1:
-            break
-        next_boundary = buf.find(boundary, header_end + 4)
-        if next_boundary == -1:
-            break
-        frame = buf[header_end + 4:next_boundary]
-        if frame:
-            try:
-                await _screen_broadcast(frame)
-            except Exception as e:
-                print("Broadcast error:", e)
-        buf = buf[next_boundary:]
-    return JSONResponse({"ok": True})
-
 
 # ---------------- COMMAND ENDPOINTS ----------------
 async def _send_cmd(msg: str):
@@ -928,22 +815,6 @@ async def ui_gif_stop():
     if not await _wait_controller_ready():
         return HTMLResponse("Discord bot not ready", status_code=503)
     await gif_stop()
-    return RedirectResponse(url="/", status_code=303)
-
-@app.post("/ui/live/start")
-async def ui_live_start():
-    if not await _wait_controller_ready():
-        return HTMLResponse("Discord bot not ready", status_code=503)
-    await _send_cmd(_cmd_with_selection("LIVE_START"))
-    _set_receiver_mode(_selected_receiver, "live")
-    return RedirectResponse(url="/", status_code=303)
-
-@app.post("/ui/live/stop")
-async def ui_live_stop():
-    if not await _wait_controller_ready():
-        return HTMLResponse("Discord bot not ready", status_code=503)
-    await _send_cmd(_cmd_with_selection("LIVE_STOP"))
-    _set_receiver_mode(_selected_receiver, "")
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/screenshot/once")
