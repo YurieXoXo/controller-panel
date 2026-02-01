@@ -147,6 +147,16 @@ def _set_receiver_mode(rid: Optional[str], mode: str):
         info.pop("mode", None)
     _save_state()
 
+def _remove_receiver(rid: str) -> bool:
+    global _selected_receiver
+    if rid in _receivers:
+        _receivers.pop(rid, None)
+        if _selected_receiver == rid:
+            _selected_receiver = None
+        _save_state()
+        return True
+    return False
+
 async def _store_screenshot_attachment(
     att: discord.Attachment,
     message: discord.Message,
@@ -334,63 +344,145 @@ CONTROL_HTML = """<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Controller</title>
   <style>
-    :root { --bg:#07030f; --card:#0e0a1a; --border:#21183a; --accent:#9b5cff; --accent2:#6b21ff; --text:#e7e7ff; --muted:#b8b5d3; --danger:#ef4444; --success:#22c55e; }
-    body { font-family: 'Segoe UI', sans-serif; background-color: var(--bg); background-image: radial-gradient(circle at 20% 20%, rgba(107,33,255,0.18), transparent 28%), radial-gradient(circle at 80% 0%, rgba(155,92,255,0.18), transparent 28%), linear-gradient(135deg, rgba(155,92,255,0.08), rgba(107,33,255,0.05)); background-repeat: no-repeat; background-attachment: fixed; background-size: cover; background-position: center; color: var(--text); margin: 0; padding: 24px; min-height: 100vh; }
-    .layout { display: grid; grid-template-columns: minmax(320px, 1fr); gap: 16px; align-items: start; }
-    .card { background: linear-gradient(145deg, rgba(14,10,26,0.94), rgba(18,14,30,0.97)); border: 1px solid var(--border); border-radius: 14px; padding: 18px; box-shadow: 0 10px 35px rgba(0,0,0,0.35); }
-    h1 { margin: 0 0 12px; font-size: 18px; letter-spacing: 0.3px; }
+    @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;600&family=Space+Grotesk:wght@400;500;600&display=swap');
+    :root {
+      --bg: #0b0907;
+      --bg-2: #120f0c;
+      --card: #14110d;
+      --card-2: #0f0c09;
+      --border: #2a241c;
+      --text: #efe7dc;
+      --muted: #b7a897;
+      --accent: #c9a073;
+      --accent-2: #8a5c34;
+      --danger: #b54a35;
+      --success: #7a9a63;
+      --shadow: rgba(0,0,0,0.55);
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Space Grotesk", "Segoe UI", sans-serif;
+      background: radial-gradient(circle at 20% 15%, rgba(201,160,115,0.08), transparent 40%),
+                  radial-gradient(circle at 80% 0%, rgba(138,92,52,0.12), transparent 45%),
+                  var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 32px 20px 60px;
+      min-height: 100vh;
+    }
+    .layout { display: grid; grid-template-columns: minmax(320px, 1fr); gap: 18px; align-items: start; max-width: 1100px; margin: 0 auto; }
+    .card {
+      background: linear-gradient(180deg, rgba(20,17,13,0.98), rgba(15,12,9,0.98));
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 22px;
+      box-shadow: 0 18px 40px var(--shadow);
+    }
+    h1, h2 { font-family: "Fraunces", "Times New Roman", serif; font-weight: 600; }
+    h1 { margin: 0 0 14px; font-size: 20px; letter-spacing: 0.2px; }
+    h2 { margin: 0 0 10px; font-size: 15px; letter-spacing: 0.2px; }
+    p { margin: 0 0 12px; }
     label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 13px; }
-    input, button { font-family: inherit; }
-    input[type=file], input[type=text], input[type=number] { width: 100%; margin-bottom: 10px; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: #0c0817; color: var(--text); }
-    button { cursor: pointer; background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #0b0419; border: none; border-radius: 10px; padding: 10px 14px; font-weight: 700; letter-spacing: 0.3px; }
-    button.secondary { background: #180f2c; color: var(--text); border: 1px solid var(--border); }
+    input, button, select, textarea { font-family: inherit; }
+    input[type=file], input[type=text], input[type=number], select {
+      width: 100%;
+      margin-bottom: 10px;
+      padding: 11px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--card-2);
+      color: var(--text);
+      transition: border-color 120ms ease, box-shadow 120ms ease;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: rgba(201,160,115,0.7);
+      box-shadow: 0 0 0 2px rgba(201,160,115,0.15);
+    }
+    button {
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #1a120c;
+      border: none;
+      border-radius: 12px;
+      padding: 10px 16px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      transition: transform 120ms ease, filter 120ms ease;
+    }
+    button:hover { filter: brightness(1.05); }
+    button:active { transform: translateY(1px); }
+    button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+    button.danger { background: linear-gradient(135deg, #c46a41, var(--danger)); color: #1a0f0a; }
     .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     small { color: var(--muted); }
-    img { max-width: 100%; border-radius: 10px; border: 1px solid var(--border); }
-    .pill { padding: 8px 12px; border-radius: 999px; border: 1px solid var(--border); background: #0c0817; }
-    .tabs { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
-    .tab-btn { background: #140c24; color: var(--muted); border: 1px solid var(--border); padding: 8px 12px; border-radius: 8px; cursor: pointer; }
-    .tab-btn.active { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #0b0419; border-color: transparent; }
+    code { background: rgba(201,160,115,0.1); padding: 2px 6px; border-radius: 6px; border: 1px solid rgba(201,160,115,0.2); }
+    img { max-width: 100%; border-radius: 12px; border: 1px solid var(--border); }
+    .pill { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: rgba(15,12,9,0.8); color: var(--muted); font-size: 12px; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+    .tab-btn {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid transparent;
+      padding: 7px 12px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+    }
+    .tab-btn:hover { color: var(--text); border-color: rgba(201,160,115,0.3); }
+    .tab-btn.active { background: rgba(201,160,115,0.12); color: var(--text); border-color: rgba(201,160,115,0.5); }
     .tab-pane { display: none; }
-    .tab-pane.active { display: block; }
+    .tab-pane.active { display: block; animation: fadeIn 160ms ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
     .receiver-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     .receiver-list { display: grid; gap: 12px; }
-    .receiver-item { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: #0c0817; }
-    .receiver-item.selected { border-color: rgba(155,92,255,0.7); box-shadow: 0 0 0 1px rgba(155,92,255,0.4); }
+    .receiver-item { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 14px; background: rgba(16,13,10,0.9); }
+    .receiver-item.selected { border-color: rgba(201,160,115,0.6); box-shadow: 0 0 0 1px rgba(201,160,115,0.25); }
     .receiver-info { display: flex; flex-direction: column; gap: 6px; }
     .receiver-title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .receiver-name { font-weight: 700; letter-spacing: 0.2px; }
+    .receiver-name { font-weight: 600; letter-spacing: 0.2px; }
     .receiver-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted); }
-    .status-pill { padding: 4px 8px; border-radius: 999px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; border: 1px solid var(--border); background: #120a22; }
-    .status-online { border-color: rgba(34,197,94,0.5); color: #86efac; background: rgba(34,197,94,0.12); }
-    .status-offline { border-color: rgba(239,68,68,0.45); color: #fecaca; background: rgba(239,68,68,0.12); }
-    .status-gif { border-color: rgba(251,146,60,0.45); color: #fdba74; background: rgba(251,146,60,0.12); }
-    .status-live { border-color: rgba(56,189,248,0.45); color: #7dd3fc; background: rgba(56,189,248,0.12); }
+    .status-pill { padding: 4px 8px; border-radius: 999px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; border: 1px solid var(--border); background: rgba(15,12,9,0.8); }
+    .status-online { border-color: rgba(122,154,99,0.5); color: #b9d2a6; background: rgba(122,154,99,0.15); }
+    .status-offline { border-color: rgba(181,74,53,0.5); color: #f0b0a2; background: rgba(181,74,53,0.15); }
+    .status-gif { border-color: rgba(201,160,115,0.5); color: #e9d2b7; background: rgba(201,160,115,0.15); }
+    .status-live { border-color: rgba(169,126,82,0.6); color: #f0d8bb; background: rgba(169,126,82,0.2); }
     .receiver-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .receiver-actions form { margin: 0; }
     .receiver-id { opacity: 0.8; }
     .receiver-summary { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
-    .receiver-empty { padding: 12px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); }
+    .receiver-empty { padding: 12px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); background: rgba(16,13,10,0.5); }
     .shot-list { display: grid; gap: 10px; margin-top: 12px; }
-    .shot-item { border: 1px solid var(--border); border-radius: 12px; background: #0c0817; padding: 10px; }
+    .shot-item { border: 1px solid var(--border); border-radius: 14px; background: rgba(16,13,10,0.85); padding: 10px; }
     .shot-summary { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: center; cursor: pointer; list-style: none; }
     .shot-summary::-webkit-details-marker { display: none; }
-    .shot-thumb { width: 72px; height: 54px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
+    .shot-thumb { width: 72px; height: 54px; object-fit: cover; border-radius: 10px; border: 1px solid var(--border); }
     .shot-time { font-size: 12px; color: var(--muted); }
-    .shot-full { margin-top: 10px; width: 100%; border-radius: 10px; border: 1px solid var(--border); }
-    .live-wrap { margin-top: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: #0b0716; }
-    .live-img { width: 100%; display: block; border-radius: 10px; border: 1px solid var(--border); background: #05030b; }
+    .shot-full { margin-top: 10px; width: 100%; border-radius: 12px; border: 1px solid var(--border); }
+    .live-wrap { margin-top: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 14px; background: rgba(12,9,7,0.8); }
+    .live-img { width: 100%; display: block; border-radius: 12px; border: 1px solid var(--border); background: #0a0806; }
     .live-status { margin-left: auto; }
-    .rename-section { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: #0c0817; }
-    .rename-section h2 { margin: 0 0 10px; font-size: 14px; letter-spacing: 0.3px; }
+    .rename-section { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 14px; background: rgba(16,13,10,0.85); }
+    .rename-section h2 { margin: 0 0 10px; font-size: 14px; letter-spacing: 0.2px; }
     .rename-grid { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(200px, 2fr) auto; gap: 10px; align-items: center; }
-    .rename-select { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: #0c0817; color: var(--text); }
+    .rename-select { width: 100%; padding: 10px; border-radius: 12px; border: 1px solid var(--border); background: var(--card-2); color: var(--text); }
     .rename-input { width: 180px; min-width: 140px; margin-bottom: 0; }
-    .panic-btn { position: fixed; right: 24px; bottom: 24px; z-index: 999; background: linear-gradient(135deg, #f97316, var(--danger)); color: #0b0419; box-shadow: 0 12px 24px rgba(239,68,68,0.35); }
+    .mono-block {
+      margin-top: 12px;
+      padding: 12px;
+      background: var(--card-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      max-height: 260px;
+      overflow: auto;
+      font-size: 13px;
+      color: var(--text);
+    }
+    .panic-btn { position: fixed; right: 24px; bottom: 24px; z-index: 999; background: linear-gradient(135deg, #c46a41, var(--danger)); color: #1a0f0a; box-shadow: 0 14px 28px rgba(181,74,53,0.35); }
     .panic-btn:active { transform: translateY(1px); }
-    .locked .app { pointer-events: none; filter: blur(1px); }
-    .pin-overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at 20% 20%, rgba(155,92,255,0.16), transparent 45%), rgba(7,3,15,0.95); z-index: 1200; }
-    .pin-card { width: min(360px, 90vw); background: linear-gradient(145deg, rgba(14,10,26,0.96), rgba(18,14,30,0.99)); border: 1px solid var(--border); border-radius: 14px; padding: 18px; box-shadow: 0 12px 36px rgba(0,0,0,0.4); }
+    .locked .app { pointer-events: none; filter: blur(1px) brightness(0.9); }
+    .pin-overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(9,7,5,0.92); backdrop-filter: blur(4px); z-index: 1200; }
+    .pin-card { width: min(360px, 90vw); background: linear-gradient(180deg, rgba(20,17,13,0.98), rgba(15,12,9,0.98)); border: 1px solid var(--border); border-radius: 16px; padding: 18px; box-shadow: 0 12px 30px var(--shadow); }
   </style>
 </head>
 <body class="locked">
@@ -497,16 +589,7 @@ CONTROL_HTML = """<!doctype html>
           </form>
         </div>
 
-        <pre id="log-output" style="
-          margin-top:12px;
-          padding:12px;
-          background:#0c0817;
-          border:1px solid var(--border);
-          border-radius:10px;
-          max-height:260px;
-          overflow:auto;
-          font-size:13px;
-        ">Waiting for logs…</pre>
+        <pre id="log-output" class="mono-block">Waiting for logs…</pre>
       </div>
       <div class="tab-pane" data-tab="messages">
         <h1>Messages</h1>
@@ -518,16 +601,7 @@ CONTROL_HTML = """<!doctype html>
             <button type="submit">Reply Latest DM</button>
           </form>
         </div>
-        <pre id="message-output" style="
-          margin-top:12px;
-          padding:12px;
-          background:#0c0817;
-          border:1px solid var(--border);
-          border-radius:10px;
-          max-height:260px;
-          overflow:auto;
-          font-size:13px;
-        ">Waiting for messages...</pre>
+        <pre id="message-output" class="mono-block">Waiting for messages...</pre>
       </div>
       <div class="tab-pane" data-tab="remotes">
         <h1>Remote's</h1>
@@ -753,6 +827,19 @@ CONTROL_HTML = """<!doctype html>
 
           actions.appendChild(selectForm);
 
+          const removeForm = document.createElement('form');
+          removeForm.method = 'post';
+          removeForm.action = '/ui/remove/' + encodeURIComponent(rec.id);
+          removeForm.dataset.confirm = `Remove ${rec.name || rec.tag || rec.id}?`;
+          wireForm(removeForm);
+          const removeBtn = document.createElement('button');
+          removeBtn.type = 'submit';
+          removeBtn.textContent = 'Remove';
+          removeBtn.className = 'danger';
+          removeForm.appendChild(removeBtn);
+
+          actions.appendChild(removeForm);
+
           item.appendChild(info);
           item.appendChild(actions);
           wrap.appendChild(item);
@@ -884,9 +971,13 @@ CONTROL_HTML = """<!doctype html>
       form.dataset.ajaxBound = '1';
       form.addEventListener('submit', async (e) => {
         e.preventDefault();
+        const confirmMsg = form.dataset.confirm;
+        if (confirmMsg && !confirm(confirmMsg)) {
+          return;
+        }
         const ok = await submitFormNoReload(form);
         if (!ok) return;
-        if (form.action.includes('/ui/rename') || form.action.includes('/ui/select')) {
+        if (form.action.includes('/ui/rename') || form.action.includes('/ui/select') || form.action.includes('/ui/remove')) {
           refreshReceivers();
         }
         if (form.action.includes('/ui/screenshot')) {
@@ -1269,6 +1360,14 @@ async def ui_rename(rid: str, request: Request):
             _save_state()
     if request.headers.get("X-Requested-With") == "fetch":
         return JSONResponse({"ok": True, "id": rid, "alias": alias or ""})
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/remove/{rid}")
+async def ui_remove(rid: str, request: Request):
+    _prune_receivers()
+    removed = _remove_receiver(rid)
+    if request.headers.get("X-Requested-With") == "fetch":
+        return JSONResponse({"ok": True, "id": rid, "removed": removed})
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/ui/panic")
