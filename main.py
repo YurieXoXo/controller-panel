@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs
@@ -52,6 +53,96 @@ _receivers: dict[str, dict] = {}
 _selected_receiver: Optional[str] = None
 
 
+def _normalize_receiver_id(value: Optional[str]) -> str:
+    text = str(value or "").replace("\ufeff", "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        text = text[1:-1].strip()
+    if not text:
+        return ""
+    try:
+        return str(uuid.UUID(text))
+    except Exception:
+        return text
+
+
+def _normalize_receiver_info(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        return {"last_seen": 0.0}
+    tag = str(raw.get("tag") or "").strip()
+    alias = str(raw.get("alias") or "").strip()
+    try:
+        last_seen = float(raw.get("last_seen", 0) or 0)
+    except Exception:
+        last_seen = 0.0
+    info = {"last_seen": max(0.0, last_seen)}
+    if tag:
+        info["tag"] = tag
+    if alias:
+        info["alias"] = alias
+    return info
+
+
+def _merge_receiver_info(base: dict, extra: dict) -> dict:
+    merged = _normalize_receiver_info(base)
+    incoming = _normalize_receiver_info(extra)
+
+    if not merged.get("alias") and incoming.get("alias"):
+        merged["alias"] = incoming["alias"]
+
+    merged_last = float(merged.get("last_seen", 0) or 0)
+    incoming_last = float(incoming.get("last_seen", 0) or 0)
+    if incoming_last >= merged_last and incoming.get("tag"):
+        merged["tag"] = incoming["tag"]
+    merged["last_seen"] = max(merged_last, incoming_last)
+    return merged
+
+
+def _normalize_receivers_state() -> bool:
+    global _receivers, _selected_receiver
+    changed = False
+    normalized: dict[str, dict] = {}
+
+    for raw_id, raw_info in list(_receivers.items()):
+        raw_id_text = str(raw_id or "")
+        rid = _normalize_receiver_id(raw_id_text)
+        if not rid:
+            changed = True
+            continue
+
+        info = _normalize_receiver_info(raw_info)
+        existing = normalized.get(rid)
+        if existing is None:
+            normalized[rid] = info
+        else:
+            normalized[rid] = _merge_receiver_info(existing, info)
+            changed = True
+
+        if rid != raw_id_text:
+            changed = True
+
+    _receivers = normalized
+
+    if _selected_receiver is not None:
+        selected_norm = _normalize_receiver_id(_selected_receiver)
+        if selected_norm != _selected_receiver:
+            changed = True
+        _selected_receiver = selected_norm or None
+
+    if _selected_receiver and _selected_receiver not in _receivers:
+        _selected_receiver = None
+        changed = True
+
+    return changed
+
+
+def _receiver_display_name(rid: str, info: dict) -> str:
+    alias = str(info.get("alias") or "").strip()
+    if alias:
+        return alias
+    tag = str(info.get("tag") or "").strip()
+    return tag or rid
+
+
 def _load_state():
     global _receivers, _selected_receiver
     if not STATE_FILE.is_file():
@@ -67,6 +158,8 @@ def _load_state():
             _receivers = receivers
         if isinstance(selected, str) or selected is None:
             _selected_receiver = selected
+    if _normalize_receivers_state():
+        _save_state()
 
 
 def _save_state():
@@ -216,13 +309,21 @@ async def on_message(message: discord.Message):
     if status not in ("ONLINE", "PING"):
         return
 
-    rid = parts[1].strip()
-    tag = parts[2].strip() or rid
+    rid = _normalize_receiver_id(parts[1])
+    tag = " ".join(parts[2:]).strip() or rid
     if not rid:
         return
 
     now = time.time()
-    info = _receivers.get(rid, {})
+    info = _receivers.get(rid)
+    if info is None:
+        for existing_id in list(_receivers.keys()):
+            if existing_id == rid:
+                continue
+            if _normalize_receiver_id(existing_id) == rid:
+                info = _receivers.pop(existing_id, {})
+                break
+    info = _normalize_receiver_info(info)
     info["tag"] = tag
     info["last_seen"] = now
     _receivers[rid] = info
@@ -422,6 +523,11 @@ CONTROL_HTML = """<!doctype html>
           <label for=\"receiver-select\">Receiver</label>
           <select id=\"receiver-select\"></select>
         </div>
+        <div>
+          <label for=\"receiver-name\">Rename Receiver</label>
+          <input id=\"receiver-name\" type=\"text\" placeholder=\"Custom name (leave blank to reset)\" />
+          <button id=\"rename-btn\" style=\"margin-top: 8px;\">Save Name</button>
+        </div>
       </div>
 
       <div class=\"grid\">
@@ -456,11 +562,13 @@ CONTROL_HTML = """<!doctype html>
 
   <script>
     const receiverSelect = document.getElementById("receiver-select");
+    const renameInput = document.getElementById("receiver-name");
     const statusEl = document.getElementById("status");
     const liveImg = document.getElementById("live-img");
     const livePlaceholder = document.getElementById("live-placeholder");
 
     let selectedReceiver = null;
+    let receiverItems = [];
     let liveSocket = null;
     let liveBlobUrl = null;
 
@@ -507,6 +615,7 @@ CONTROL_HTML = """<!doctype html>
         const res = await fetch("/api/receivers");
         const data = await res.json();
         const items = Array.isArray(data.items) ? data.items : [];
+        receiverItems = items;
         const preferred = data.selected || selectedReceiver;
 
         receiverSelect.innerHTML = "";
@@ -516,6 +625,8 @@ CONTROL_HTML = """<!doctype html>
           opt.textContent = "No receivers online";
           receiverSelect.appendChild(opt);
           selectedReceiver = null;
+          renameInput.value = "";
+          renameInput.placeholder = "Custom name (leave blank to reset)";
           setStatus("No receivers detected yet.");
           return;
         }
@@ -524,7 +635,11 @@ CONTROL_HTML = """<!doctype html>
           const opt = document.createElement("option");
           opt.value = item.id;
           const marker = item.online ? "ONLINE" : "OFFLINE";
-          opt.textContent = "[" + marker + "] " + (item.name || item.id);
+          let label = item.name || item.id;
+          if (item.alias && item.tag && item.alias.toLowerCase() !== item.tag.toLowerCase()) {
+            label = item.alias + " (" + item.tag + ")";
+          }
+          opt.textContent = "[" + marker + "] " + label;
           receiverSelect.appendChild(opt);
         }
 
@@ -541,6 +656,8 @@ CONTROL_HTML = """<!doctype html>
 
         const current = items.find(x => x.id === pick);
         if (current) {
+          renameInput.value = current.alias || "";
+          renameInput.placeholder = "Custom name (default: " + (current.tag || current.id) + ")";
           setStatus("Selected: " + (current.name || current.id));
         }
       } catch (e) {
@@ -607,9 +724,14 @@ CONTROL_HTML = """<!doctype html>
       const value = receiverSelect.value || null;
       selectedReceiver = value;
       if (!value) {
+        renameInput.value = "";
+        renameInput.placeholder = "Custom name (leave blank to reset)";
         setStatus("Select a receiver first.", true);
         return;
       }
+      const current = receiverItems.find(x => x.id === value);
+      renameInput.value = current && current.alias ? current.alias : "";
+      renameInput.placeholder = "Custom name (default: " + ((current && (current.tag || current.id)) || value) + ")";
       try {
         await post("/api/select", { receiver: value });
         setStatus("Selected receiver updated.");
@@ -637,6 +759,28 @@ CONTROL_HTML = """<!doctype html>
         return;
       }
       runAction("/api/close", { proc });
+    });
+
+    document.getElementById("rename-btn").addEventListener("click", async () => {
+      if (!selectedReceiver) {
+        setStatus("Select a receiver first.", true);
+        return;
+      }
+      const name = (renameInput.value || "").trim();
+      try {
+        const resp = await post("/api/rename", { receiver: selectedReceiver, name });
+        setStatus(resp.message || "Receiver name updated.");
+        await refreshReceivers();
+      } catch (e) {
+        setStatus(e.message, true);
+      }
+    });
+
+    renameInput.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        document.getElementById("rename-btn").click();
+      }
     });
 
     document.getElementById("live-start").addEventListener("click", async () => {
@@ -680,11 +824,15 @@ async def api_receivers():
 
     items = []
     for rid, info in _receivers.items():
-        name = str(info.get("tag") or rid)
+        display_name = _receiver_display_name(rid, info)
+        tag = str(info.get("tag") or rid).strip() or rid
+        alias = str(info.get("alias") or "").strip() or None
         items.append(
             {
                 "id": rid,
-                "name": name,
+                "name": display_name,
+                "tag": tag,
+                "alias": alias,
                 "online": _receiver_is_online(info, now),
                 "last_seen": float(info.get("last_seen", 0) or 0),
             }
@@ -698,7 +846,7 @@ async def api_receivers():
 async def api_select(request: Request):
     global _selected_receiver
 
-    rid = await _read_value(request, "receiver")
+    rid = _normalize_receiver_id(await _read_value(request, "receiver"))
     if not rid:
         return JSONResponse({"ok": False, "error": "receiver is required"}, status_code=400)
     _prune_receivers()
@@ -708,6 +856,31 @@ async def api_select(request: Request):
     _selected_receiver = rid
     _save_state()
     return JSONResponse({"ok": True, "message": "Receiver selected."})
+
+
+@app.post("/api/rename")
+async def api_rename(request: Request):
+    rid = _normalize_receiver_id((await _read_value(request, "receiver")) or _selected_receiver)
+    if not rid:
+        return JSONResponse({"ok": False, "error": "receiver is required"}, status_code=400)
+
+    _prune_receivers()
+    if rid not in _receivers:
+        return JSONResponse({"ok": False, "error": "receiver not found"}, status_code=404)
+
+    info = _normalize_receiver_info(_receivers.get(rid))
+    alias = (await _read_value(request, "name") or "").strip()
+    if alias:
+        info["alias"] = alias[:80]
+        message = "Receiver renamed."
+    else:
+        info.pop("alias", None)
+        message = "Receiver name reset."
+    _receivers[rid] = info
+    _save_state()
+    return JSONResponse(
+        {"ok": True, "message": message, "name": _receiver_display_name(rid, info)}
+    )
 
 
 async def _send_selected_command(cmd: str, *args: str):
